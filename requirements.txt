@@ -1,0 +1,11 @@
+torch
+torchvision
+torch-geometric
+transformers
+sentencepiece
+protobuf
+scikit-learn
+pillow
+numpy
+tqdm
+pytest
