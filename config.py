@@ -1,12 +1,13 @@
 class Config:
     # Directory containing train/, val/, and test/ MOCHEG directories.
-    data_root = "dataset/"
+    data_root = "dataset/mocheg"
 
     checkpoint_dir = "outputs/checkpoints"
     log_dir = "outputs/logs"
     prediction_dir = "outputs/predictions"
 
     text_model = "microsoft/deberta-v3-base"
+    vision_model = "sail/poolformer_s12"
     max_text_length = 256
 
     image_size = 224
@@ -16,14 +17,13 @@ class Config:
     text_gnn_heads = 4
     text_graph_k = 3
 
-    vision_patch_size = 16
     vision_knn = 9
     vision_gnn_layers = 4
 
     cross_heads = 4
 
-    batch_size = 8
-    epochs = 10
+    batch_size = 16
+    epochs = 30
     num_workers = 0
     seed = 42
 
