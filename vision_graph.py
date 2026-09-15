@@ -1,9 +1,10 @@
-"""Patch-level graph reasoning for one or more evidence images."""
+"""Spatial feature graph reasoning for one or more evidence images."""
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 from torch_geometric.nn import SAGEConv
+from transformers import PoolFormerModel
 
 
 class VisionGraphBlock(nn.Module):
@@ -26,42 +27,99 @@ class VisionGraphBlock(nn.Module):
 
 
 class VisionGraph(nn.Module):
-    """Encode image patches and reason within each image independently."""
+    """Encode images with PoolFormer and reason over spatial feature nodes."""
 
-    def __init__(self, config):
+    def __init__(self, config, encoder=None):
         super().__init__()
         self.hidden_dim = config.hidden_dim
-        self.patch_size = config.vision_patch_size
         self.k = config.vision_knn
         num_layers = config.vision_gnn_layers
         dropout = getattr(config, "dropout", 0.1)
 
-        if self.patch_size < 1:
-            raise ValueError("vision_patch_size must be positive")
+        self.encoder = (
+            encoder
+            if encoder is not None
+            else PoolFormerModel.from_pretrained(config.vision_model)
+        )
+        self.image_size = config.image_size
+        self.feature_grid = self._infer_feature_grid(
+            self.image_size,
+            self.encoder.config,
+        )
+        self.projection = nn.Linear(
+            self.encoder.config.hidden_sizes[-1],
+            self.hidden_dim,
+        )
+        self.encoder.to(dtype=self.projection.weight.dtype)
+        self.encoder.requires_grad_(False)
+        self.encoder.eval()
+
         if self.k < 0:
             raise ValueError("vision_knn must be non-negative")
         if num_layers < 1:
             raise ValueError("vision_gnn_layers must be at least 1")
-
-        self.patch_embedding = nn.Conv2d(
-            3,
-            self.hidden_dim,
-            kernel_size=self.patch_size,
-            stride=self.patch_size,
-        )
         self.blocks = nn.ModuleList(
             VisionGraphBlock(self.hidden_dim, dropout) for _ in range(num_layers)
         )
         self.no_image_token = nn.Parameter(torch.empty(1, 1, self.hidden_dim))
         nn.init.normal_(self.no_image_token, std=0.02)
 
+    def train(self, mode=True):
+        super().train(mode)
+        self.encoder.eval()
+        return self
+
+    @staticmethod
+    def _infer_feature_grid(image_size, encoder_config):
+        """Return PoolFormer's final spatial grid for a square input."""
+
+        if image_size < 1:
+            raise ValueError("image_size must be positive")
+
+        patch_sizes = encoder_config.patch_sizes
+        strides = encoder_config.strides
+        paddings = encoder_config.padding
+        if not (len(patch_sizes) == len(strides) == len(paddings)):
+            raise ValueError("PoolFormer stage configuration lengths must match")
+
+        height = width = image_size
+        for patch_size, stride, padding in zip(
+            patch_sizes,
+            strides,
+            paddings,
+        ):
+            patch_height, patch_width = VisionGraph._pair(patch_size)
+            stride_height, stride_width = VisionGraph._pair(stride)
+            padding_height, padding_width = VisionGraph._pair(padding)
+            if min(
+                patch_height,
+                patch_width,
+                stride_height,
+                stride_width,
+            ) < 1:
+                raise ValueError("PoolFormer patch sizes and strides must be positive")
+            height = (height + 2 * padding_height - patch_height) // stride_height + 1
+            width = (width + 2 * padding_width - patch_width) // stride_width + 1
+
+        if height < 1 or width < 1:
+            raise ValueError("image_size is too small for the PoolFormer stages")
+        return height, width
+
+    @staticmethod
+    def _pair(value):
+        if isinstance(value, int):
+            return value, value
+        if len(value) != 2:
+            raise ValueError("PoolFormer spatial parameters must be scalars or pairs")
+        return value[0], value[1]
+
     def build_edges(self, features):
-        """Build a safe bidirectional cosine-kNN patch graph.
+        """Build a safe bidirectional cosine-kNN spatial graph.
 
         Args:
-            features: Patch features with shape ``[num_patches, hidden_dim]``.
+            features: Spatial features with shape ``[num_nodes, hidden_dim]``.
         Returns:
-            A long tensor with shape ``[2, num_edges]``. For a one-patch
+            A long tensor with shape ``[2, num_edges]``. For a one-node
             image, it is an empty edge set; GraphSAGE still applies its root
             transformation.
         """
@@ -70,7 +128,7 @@ class VisionGraph(nn.Module):
             raise ValueError("features must have shape [visual_nodes, hidden_dim]")
         num_nodes = features.size(0)
         if num_nodes < 1:
-            raise ValueError("a visual graph must contain at least one patch")
+            raise ValueError("a visual graph must contain at least one node")
 
         neighbors_per_node = min(self.k, num_nodes - 1)
         if neighbors_per_node == 0:
@@ -98,7 +156,7 @@ class VisionGraph(nn.Module):
         """Return padded visual nodes for a batch of image sets.
 
         ``images`` normally has shape ``[B, M, 3, H, W]``; ``[B, 3, H, W]``
-        is accepted as a one-image shorthand. Valid images are patch-embedded
+        is accepted as a one-image shorthand. Valid images are spatially encoded
         together, but each fixed kNN graph is built and processed separately
         through the shared graph blocks. A sample with no valid image receives
         one valid learned no-image token.
@@ -120,8 +178,11 @@ class VisionGraph(nn.Module):
             raise TypeError("images must be floating-point tensors")
 
         batch_size, max_images, _, height, width = images.shape
-        if height < self.patch_size or width < self.patch_size:
-            raise ValueError("image height and width must be at least vision_patch_size")
+        if (height, width) != (self.image_size, self.image_size):
+            raise ValueError(
+                "images must match the PoolFormer input size "
+                f"{self.image_size}x{self.image_size}"
+            )
 
         if image_mask is None:
             image_mask = torch.ones(
@@ -132,21 +193,20 @@ class VisionGraph(nn.Module):
         else:
             image_mask = image_mask.to(device=images.device, dtype=torch.bool)
 
-        patch_height = height // self.patch_size
-        patch_width = width // self.patch_size
-        patches_per_image = patch_height * patch_width
+        feature_height, feature_width = self.feature_grid
+        features_per_image = feature_height * feature_width
         no_image = ~image_mask.any(dim=1)
 
         # A collator normally keeps M >= 1. Supporting M == 0 here makes the
-        # missing-image contract explicit and avoids applying Conv2d to empties.
+        # missing-image contract explicit and avoids encoding empty tensors.
         if max_images == 0:
             nodes = self.no_image_token.expand(batch_size, 1, -1)
             visual_node_mask = torch.ones(
                 (batch_size, 1), dtype=torch.bool, device=images.device
             )
             details = {
-                "patch_grid": (patch_height, patch_width),
-                "patches_per_image": patches_per_image,
+                "patch_grid": (feature_height, feature_width),
+                "patches_per_image": features_per_image,
                 "image_mask": image_mask,
                 "no_image": no_image,
                 "edge_indices": [[] for _ in range(batch_size)],
@@ -165,14 +225,25 @@ class VisionGraph(nn.Module):
         ]
 
         if valid_indices.numel():
-            valid_patches = self.patch_embedding(flat_images[valid_indices])
-            valid_patches = valid_patches.flatten(2).transpose(1, 2).contiguous()
+            with torch.no_grad():
+                encoded = self.encoder(pixel_values=flat_images[valid_indices])
+            feature_maps = encoded.last_hidden_state
+            if feature_maps.ndim != 4:
+                raise ValueError(
+                    "PoolFormer must return [images, channels, height, width]"
+                )
+            if feature_maps.size(1) != self.projection.in_features:
+                raise ValueError("PoolFormer returned an unexpected channel width")
+            if tuple(feature_maps.shape[-2:]) != self.feature_grid:
+                raise ValueError("PoolFormer returned an unexpected spatial grid")
+            valid_features = feature_maps.flatten(2).transpose(1, 2).contiguous()
+            valid_features = self.projection(valid_features)
             encoded_images = []
-            for valid_index, patch_nodes in zip(valid_indices, valid_patches):
-                edge_index = self.build_edges(patch_nodes)
+            for valid_index, feature_nodes in zip(valid_indices, valid_features):
+                edge_index = self.build_edges(feature_nodes)
                 for block in self.blocks:
-                    patch_nodes = block(patch_nodes, edge_index)
-                encoded_images.append(patch_nodes)
+                    feature_nodes = block(feature_nodes, edge_index)
+                encoded_images.append(feature_nodes)
 
                 if return_details:
                     flat_index = int(valid_index.item())
@@ -182,22 +253,22 @@ class VisionGraph(nn.Module):
             encoded_images = torch.stack(encoded_images)
             flat_nodes = encoded_images.new_zeros(
                 batch_size * max_images,
-                patches_per_image,
+                features_per_image,
                 self.hidden_dim,
             )
             flat_nodes = flat_nodes.index_copy(0, valid_indices, encoded_images)
         else:
             flat_nodes = images.new_zeros(
                 batch_size * max_images,
-                patches_per_image,
+                features_per_image,
                 self.hidden_dim,
             )
 
         nodes = flat_nodes.reshape(
-            batch_size, max_images * patches_per_image, self.hidden_dim
+            batch_size, max_images * features_per_image, self.hidden_dim
         )
         visual_node_mask = image_mask.unsqueeze(-1).expand(
-            -1, -1, patches_per_image
+            -1, -1, features_per_image
         ).reshape(batch_size, -1)
 
         # Keep exactly one valid key/value for samples with no image. This
@@ -208,8 +279,10 @@ class VisionGraph(nn.Module):
         visual_node_mask = visual_node_mask | token_positions
 
         details = {
-            "patch_grid": (patch_height, patch_width),
-            "patches_per_image": patches_per_image,
+            # Keep these public names for inference/checkpoint consumers. They
+            # now describe PoolFormer's final spatial feature grid.
+            "patch_grid": (feature_height, feature_width),
+            "patches_per_image": features_per_image,
             "image_mask": image_mask,
             "no_image": no_image,
             "edge_indices": edge_details,

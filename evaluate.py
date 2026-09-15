@@ -32,8 +32,11 @@ def build_dataloader(
         config.data_root,
         split,
         image_size=config.image_size,
+        vision_model=config.vision_model,
         limit=limit,
     )
+    if len(dataset) == 0:
+        raise ValueError(f"MOCHEG split {split!r} contains no samples")
     collator = MochegCollator(
         tokenizer,
         max_text_length=config.max_text_length,
@@ -105,17 +108,22 @@ def evaluate_model(model, dataloader, device, num_classes=3):
     progress = tqdm(dataloader, desc="Evaluating", unit="batch")
     for batch in progress:
         batch = move_batch_to_device(batch, device)
+        batch_size = batch["labels"].size(0)
+        if batch_size == 0:
+            raise ValueError("Evaluation batch contains no samples")
+
         logits = model(batch)
         targets = batch["labels"]
         loss = F.cross_entropy(logits, targets)
 
-        batch_size = targets.size(0)
         total_loss += loss.item() * batch_size
         total_examples += batch_size
         labels.extend(targets.detach().cpu().tolist())
         predictions.extend(logits.argmax(dim=-1).detach().cpu().tolist())
         progress.set_postfix(loss=f"{total_loss / total_examples:.4f}")
 
+    if total_examples == 0:
+        raise ValueError("Cannot evaluate an empty DataLoader")
     metrics = compute_metrics(labels, predictions, num_classes=num_classes)
     metrics["loss"] = total_loss / total_examples
     metrics["classification_loss"] = metrics["loss"]
@@ -145,7 +153,10 @@ def load_checkpoint(model, checkpoint_or_path, device):
 def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate DualGraphFC on MOCHEG")
     parser.add_argument("--data-root", help="Directory containing MOCHEG splits")
-    parser.add_argument("--checkpoint", help="Checkpoint path; defaults to best.pt")
+    parser.add_argument(
+        "--checkpoint",
+        help="Checkpoint path; defaults to poolformer_s12_best.pt",
+    )
     parser.add_argument("--output", help="Metrics JSON path")
     parser.add_argument("--split", choices=("train", "val", "test"), default="test")
     parser.add_argument("--batch-size", type=int)
@@ -161,7 +172,9 @@ def main():
 
     args = parse_args()
     config = Config()
-    checkpoint_path = args.checkpoint or str(Path(config.checkpoint_dir) / "best.pt")
+    checkpoint_path = args.checkpoint or str(
+        Path(config.checkpoint_dir) / "poolformer_s12_best.pt"
+    )
     checkpoint = read_checkpoint(checkpoint_path)
     if "config" in checkpoint:
         config = Config.from_dict(checkpoint["config"])

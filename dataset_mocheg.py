@@ -16,6 +16,8 @@ class MochegDataset:
 
     def load_split(self, split, limit=None):
         split = self._check_split(split)
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be at least 1")
         if split not in self._splits:
             self._load_split(split)
         samples = self._splits[split]

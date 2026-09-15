@@ -6,6 +6,7 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
+from transformers import AutoImageProcessor
 
 from dataset_mocheg import MochegDataset as MochegLoader
 
@@ -27,9 +28,23 @@ def _label_to_id(label):
         raise ValueError(f"Unknown MOCHEG label: {label!r}") from exc
 
 
-def build_image_transform(image_size=224):
-    """Return the default RGB image-to-tensor preprocessing pipeline."""
+class _ImageTransform:
+    def __init__(self, processor):
+        self.processor = processor
 
+    def __call__(self, image):
+        return self.processor(
+            images=image,
+            return_tensors="pt",
+        )["pixel_values"][0]
+
+
+def build_image_transform(image_size=224, vision_model=None):
+    """Return image preprocessing for PoolFormer or a custom vision backbone."""
+
+    if vision_model is not None:
+        processor = AutoImageProcessor.from_pretrained(vision_model)
+        return _ImageTransform(processor)
     return transforms.Compose(
         [
             transforms.Resize((image_size, image_size)),
@@ -50,14 +65,16 @@ class MochegDataset(Dataset):
         self,
         root,
         split,
-        max_images=3,
         image_size=224,
+        vision_model=None,
         image_transform=None,
         limit=None,
     ):
-        self.max_images = max_images
         self.image_size = image_size
-        self.image_transform = image_transform or build_image_transform(image_size)
+        self.image_transform = image_transform or build_image_transform(
+            image_size,
+            vision_model,
+        )
 
         self.samples = MochegLoader(root).load_split(split, limit=limit)
 
@@ -170,18 +187,20 @@ class MochegCollator:
             encoded["attention_mask"], dtype=torch.long
         ).reshape(batch_size, num_text_nodes, -1)
 
+        max_images = max(len(sample["images"]) for sample in samples)
         images = torch.zeros(
             (
                 batch_size,
+                max_images,
                 3,
                 self.image_size,
                 self.image_size,
             ),
             dtype=torch.float32,
         )
-        image_mask = torch.zeros((batch_size, self.max_images), dtype=torch.bool)
+        image_mask = torch.zeros((batch_size, max_images), dtype=torch.bool)
         for batch_index, sample in enumerate(samples):
-            sample_images = sample["images"][: self.max_images]
+            sample_images = sample["images"]
             if sample_images:
                 images[batch_index, : len(sample_images)] = torch.stack(sample_images)
                 image_mask[batch_index, : len(sample_images)] = True
@@ -191,7 +210,7 @@ class MochegCollator:
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "text_node_mask": text_node_mask,
-            # Image tensor: [B, max_images, 3, H, W].
+            # Image tensor: [B, batch_max_images, 3, H, W].
             "images": images,
             "image_mask": image_mask,
             "has_image": image_mask.any(dim=1),

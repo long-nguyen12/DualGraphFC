@@ -12,11 +12,11 @@ from vision_graph import VisionGraph
 class DualGraphFC(nn.Module):
     """Dual text/vision graph fact checker."""
 
-    def __init__(self, config, text_backbone=None):
+    def __init__(self, config, text_backbone=None, vision_backbone=None):
         super().__init__()
         self.text_encoder = TextEncoder(config, encoder=text_backbone)
         self.text_graph = TextGraph(config)
-        self.vision_graph = VisionGraph(config)
+        self.vision_graph = VisionGraph(config, encoder=vision_backbone)
         self.cross_graph = CrossGraphReasoner(config)
         self.fusion = MultimodalFusion(config)
 

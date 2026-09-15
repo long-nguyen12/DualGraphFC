@@ -53,6 +53,10 @@ def train_one_epoch(model, dataloader, optimizer, device, config, epoch):
     progress = tqdm(dataloader, desc=f"Training (Epoch {epoch})", unit="batch")
     for batch in progress:
         batch = move_batch_to_device(batch, device)
+        batch_size = batch["labels"].size(0)
+        if batch_size == 0:
+            raise ValueError("Training batch contains no samples")
+
         optimizer.zero_grad(set_to_none=True)
 
         if use_alignment:
@@ -74,7 +78,6 @@ def train_one_epoch(model, dataloader, optimizer, device, config, epoch):
         torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
         optimizer.step()
 
-        batch_size = batch["labels"].size(0)
         total_examples += batch_size
         totals["loss"] += loss.detach().item() * batch_size
         totals["classification_loss"] += (
@@ -220,7 +223,9 @@ def main():
 
     model = DualGraphFC(config).to(device)
     optimizer = build_optimizer(model, config, weight_decay=config.weight_decay)
-    checkpoint_path = args.checkpoint or str(Path(config.checkpoint_dir) / "best.pt")
+    checkpoint_path = args.checkpoint or str(
+        Path(config.checkpoint_dir) / "poolformer_s12_best.pt"
+    )
     history_path = args.history or str(Path(config.log_dir) / "training_history.json")
 
     _, best_macro_f1 = fit(

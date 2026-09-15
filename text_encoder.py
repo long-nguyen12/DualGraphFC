@@ -1,5 +1,6 @@
 """Transformer encoder for claim and evidence graph nodes."""
 
+import torch
 from torch import nn
 from transformers import AutoModel
 
@@ -19,6 +20,13 @@ class TextEncoder(nn.Module):
             config.hidden_dim,
         )
         self.encoder.to(dtype=self.projection.weight.dtype)
+        self.encoder.requires_grad_(False)
+        self.encoder.eval()
+
+    def train(self, mode=True):
+        super().train(mode)
+        self.encoder.eval()
+        return self
 
     def forward(self, input_ids, attention_mask, node_mask=None):
         """Return ``[batch, text_nodes, hidden_dim]`` node features.
@@ -32,10 +40,11 @@ class TextEncoder(nn.Module):
             raise ValueError("input_ids and attention_mask must have the same shape")
 
         if input_ids.ndim == 2:
-            outputs = self.encoder(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-            )
+            with torch.no_grad():
+                outputs = self.encoder(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                )
             return self.projection(outputs.last_hidden_state[:, 0])
 
         if input_ids.ndim != 3:
@@ -55,10 +64,11 @@ class TextEncoder(nn.Module):
             (batch_size * num_nodes, self.projection.out_features)
         )
         if valid.any():
-            outputs = self.encoder(
-                input_ids=flat_ids[valid],
-                attention_mask=flat_attention[valid],
-            )
+            with torch.no_grad():
+                outputs = self.encoder(
+                    input_ids=flat_ids[valid],
+                    attention_mask=flat_attention[valid],
+                )
             features[valid] = self.projection(outputs.last_hidden_state[:, 0])
 
         return features.reshape(batch_size, num_nodes, -1)

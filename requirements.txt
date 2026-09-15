@@ -2,10 +2,12 @@ torch
 torchvision
 torch-geometric
 transformers
-sentencepiece
+sentencepiece>=0.2.0
 protobuf
 scikit-learn
 pillow
 numpy
 tqdm
+matplotlib
+networkx
 pytest
