@@ -1,3 +1,6 @@
+"""DualGraphFC configuration."""
+
+
 class Config:
     # Directory containing train/, val/, and test/ MOCHEG directories.
     data_root = "dataset/mocheg"
@@ -8,6 +11,7 @@ class Config:
 
     text_model = "microsoft/deberta-v3-base"
     vision_model = "sail/poolformer_s12"
+    vision_feature_cache_dir = None
     max_text_length = 256
 
     image_size = 224

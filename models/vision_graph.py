@@ -148,50 +148,65 @@ class VisionGraph(nn.Module):
 
     def forward(
         self,
-        images,
+        images=None,
         image_mask=None,
         return_mask=False,
         return_details=False,
+        feature_maps=None,
     ):
         """Return padded visual nodes for a batch of image sets.
 
         ``images`` normally has shape ``[B, M, 3, H, W]``; ``[B, 3, H, W]``
-        is accepted as a one-image shorthand. Valid images are spatially encoded
-        together, but each fixed kNN graph is built and processed separately
-        through the shared graph blocks. A sample with no valid image receives
-        one valid learned no-image token.
+        is accepted as a one-image shorthand. Alternatively, ``feature_maps``
+        accepts cached PoolFormer outputs with shape ``[B, M, C, Hf, Wf]``.
+        Each fixed kNN graph is built and processed separately through the
+        shared graph blocks. A sample with no valid image receives one valid
+        learned no-image token.
 
         Return conventions are deliberately simple: nodes only by default;
         ``(nodes, visual_node_mask)`` with ``return_mask``; ``(nodes, details)``
         with ``return_details``; or all three when both flags are true.
         """
 
-        if images.ndim == 4:
-            images = images.unsqueeze(1)
+        if (images is None) == (feature_maps is None):
+            raise ValueError("Pass exactly one of images or feature_maps")
+
+        values = feature_maps if feature_maps is not None else images
+        if values.ndim == 4:
+            values = values.unsqueeze(1)
             if image_mask is not None and image_mask.ndim == 1:
                 image_mask = image_mask.unsqueeze(1)
-        if images.ndim != 5:
-            raise ValueError("images must have shape [batch, images, 3, height, width]")
-        if images.size(2) != 3:
-            raise ValueError("images must have three RGB channels")
-        if not torch.is_floating_point(images):
-            raise TypeError("images must be floating-point tensors")
+        if values.ndim != 5:
+            raise ValueError("Vision inputs must have shape [batch, images, channels, H, W]")
+        if not torch.is_floating_point(values):
+            raise TypeError("Vision inputs must be floating-point tensors")
 
-        batch_size, max_images, _, height, width = images.shape
-        if (height, width) != (self.image_size, self.image_size):
+        batch_size, max_images, channels, height, width = values.shape
+        if feature_maps is None:
+            if channels != 3:
+                raise ValueError("images must have three RGB channels")
+            if (height, width) != (self.image_size, self.image_size):
+                raise ValueError(
+                    "images must match the PoolFormer input size "
+                    f"{self.image_size}x{self.image_size}"
+                )
+        elif (channels, height, width) != (
+            self.projection.in_features,
+            *self.feature_grid,
+        ):
             raise ValueError(
-                "images must match the PoolFormer input size "
-                f"{self.image_size}x{self.image_size}"
+                "feature_maps must match PoolFormer's final feature shape "
+                f"{(self.projection.in_features, *self.feature_grid)}"
             )
 
         if image_mask is None:
             image_mask = torch.ones(
-                (batch_size, max_images), dtype=torch.bool, device=images.device
+                (batch_size, max_images), dtype=torch.bool, device=values.device
             )
         elif image_mask.shape != (batch_size, max_images):
             raise ValueError("image_mask must have shape [batch, images]")
         else:
-            image_mask = image_mask.to(device=images.device, dtype=torch.bool)
+            image_mask = image_mask.to(device=values.device, dtype=torch.bool)
 
         feature_height, feature_width = self.feature_grid
         features_per_image = feature_height * feature_width
@@ -215,9 +230,7 @@ class VisionGraph(nn.Module):
                 nodes, visual_node_mask, details, return_mask, return_details
             )
 
-        flat_images = images.reshape(
-            batch_size * max_images, 3, height, width
-        )
+        flat_values = values.reshape(batch_size * max_images, channels, height, width)
         flat_image_mask = image_mask.reshape(-1)
         valid_indices = flat_image_mask.nonzero(as_tuple=False).flatten()
         edge_details = [
@@ -225,18 +238,22 @@ class VisionGraph(nn.Module):
         ]
 
         if valid_indices.numel():
-            with torch.no_grad():
-                encoded = self.encoder(pixel_values=flat_images[valid_indices])
-            feature_maps = encoded.last_hidden_state
-            if feature_maps.ndim != 4:
+            if feature_maps is None:
+                with torch.no_grad():
+                    encoded = self.encoder(pixel_values=flat_values[valid_indices])
+                valid_feature_maps = encoded.last_hidden_state
+            else:
+                valid_feature_maps = flat_values[valid_indices]
+            if valid_feature_maps.ndim != 4:
                 raise ValueError(
                     "PoolFormer must return [images, channels, height, width]"
                 )
-            if feature_maps.size(1) != self.projection.in_features:
+            if valid_feature_maps.size(1) != self.projection.in_features:
                 raise ValueError("PoolFormer returned an unexpected channel width")
-            if tuple(feature_maps.shape[-2:]) != self.feature_grid:
+            if tuple(valid_feature_maps.shape[-2:]) != self.feature_grid:
                 raise ValueError("PoolFormer returned an unexpected spatial grid")
-            valid_features = feature_maps.flatten(2).transpose(1, 2).contiguous()
+            valid_feature_maps = valid_feature_maps.to(dtype=self.projection.weight.dtype)
+            valid_features = valid_feature_maps.flatten(2).transpose(1, 2).contiguous()
             valid_features = self.projection(valid_features)
             encoded_images = []
             for valid_index, feature_nodes in zip(valid_indices, valid_features):
@@ -258,7 +275,7 @@ class VisionGraph(nn.Module):
             )
             flat_nodes = flat_nodes.index_copy(0, valid_indices, encoded_images)
         else:
-            flat_nodes = images.new_zeros(
+            flat_nodes = self.projection.weight.new_zeros(
                 batch_size * max_images,
                 features_per_image,
                 self.hidden_dim,

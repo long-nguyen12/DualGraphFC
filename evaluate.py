@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer
 
-from dataset import ID_TO_LABEL, MochegCollator, MochegDataset
+from data.dataset import ID_TO_LABEL, MochegCollator, MochegDataset
 from utils import move_batch_to_device, save_json
 
 
@@ -33,6 +33,7 @@ def build_dataloader(
         split,
         image_size=config.image_size,
         vision_model=config.vision_model,
+        feature_cache_dir=getattr(config, "vision_feature_cache_dir", None),
         limit=limit,
     )
     if len(dataset) == 0:
@@ -41,6 +42,7 @@ def build_dataloader(
         tokenizer,
         max_text_length=config.max_text_length,
         image_size=config.image_size,
+        feature_shape=dataset.feature_shape,
     )
     loader = DataLoader(
         dataset,
@@ -161,6 +163,7 @@ def parse_args():
     parser.add_argument("--split", choices=("train", "val", "test"), default="test")
     parser.add_argument("--batch-size", type=int)
     parser.add_argument("--num-workers", type=int)
+    parser.add_argument("--feature-cache", help="Precomputed PoolFormer cache directory")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--device", default="auto")
     return parser.parse_args()
@@ -168,7 +171,7 @@ def parse_args():
 
 def main():
     from config import Config
-    from model import DualGraphFC
+    from models.model import DualGraphFC
 
     args = parse_args()
     config = Config()
@@ -185,6 +188,8 @@ def main():
         config.batch_size = args.batch_size
     if args.num_workers is not None:
         config.num_workers = args.num_workers
+    if args.feature_cache is not None:
+        config.vision_feature_cache_dir = args.feature_cache
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dataloader, _ = build_dataloader(

@@ -12,10 +12,15 @@ from PIL import Image
 from transformers import AutoTokenizer
 
 from config import Config
-from dataset import ID_TO_LABEL, MochegCollator, _label_to_id, build_image_transform
-from dataset_mocheg import MochegDataset as MochegLoader
+from data.dataset import (
+    ID_TO_LABEL,
+    MochegCollator,
+    _label_to_id,
+    build_image_transform,
+)
+from data.dataset_mocheg import MochegDataset as MochegLoader
 from evaluate import load_checkpoint, read_checkpoint
-from model import DualGraphFC
+from models.model import DualGraphFC
 from utils import move_batch_to_device, save_json
 
 

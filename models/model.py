@@ -2,11 +2,11 @@
 
 from torch import nn
 
-from cross_graph import CrossGraphReasoner
-from fusion import MultimodalFusion
-from text_encoder import TextEncoder
-from text_graph import TextGraph
-from vision_graph import VisionGraph
+from models.cross_graph import CrossGraphReasoner
+from models.fusion import MultimodalFusion
+from models.text_encoder import TextEncoder
+from models.text_graph import TextGraph
+from models.vision_graph import VisionGraph
 
 
 class DualGraphFC(nn.Module):
@@ -45,10 +45,11 @@ class DualGraphFC(nn.Module):
             text_attention = None
 
         vision_result = self.vision_graph(
-            batch["images"],
-            batch["image_mask"],
+            images=batch.get("images"),
+            image_mask=batch["image_mask"],
             return_mask=True,
             return_details=return_attention,
+            feature_maps=batch.get("image_features"),
         )
         if return_attention:
             visual_nodes, visual_mask, vision_details = vision_result

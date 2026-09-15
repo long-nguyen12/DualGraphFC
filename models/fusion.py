@@ -1,3 +1,5 @@
+"""Attention-based multimodal feature fusion."""
+
 import torch
 from torch import nn
 

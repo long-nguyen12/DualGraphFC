@@ -174,6 +174,7 @@ def parse_args():
     parser.add_argument("--alignment-weight", type=float)
     parser.add_argument("--weight-decay", type=float)
     parser.add_argument("--num-workers", type=int)
+    parser.add_argument("--feature-cache", help="Precomputed PoolFormer cache directory")
     parser.add_argument("--train-limit", type=int)
     parser.add_argument("--val-limit", type=int)
     parser.add_argument("--seed", type=int)
@@ -182,7 +183,7 @@ def parse_args():
 
 def main():
     from config import Config
-    from model import DualGraphFC
+    from models.model import DualGraphFC
 
     args = parse_args()
     config = Config()
@@ -201,6 +202,8 @@ def main():
         config.seed = args.seed
     if args.num_workers is not None:
         config.num_workers = args.num_workers
+    if args.feature_cache is not None:
+        config.vision_feature_cache_dir = args.feature_cache
     if args.weight_decay is not None:
         config.weight_decay = args.weight_decay
 

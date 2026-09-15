@@ -44,3 +44,8 @@ tests/
 dataset/
 datasets/
 outputs/
+
+# Keep Python data-loading modules while ignoring generated data files.
+!data/
+data/*
+!data/*.py
