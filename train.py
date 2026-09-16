@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 from tqdm.auto import tqdm
 
+from config import VISION_MODELS, resolve_vision_model
 from evaluate import build_dataloader, evaluate_model, load_checkpoint
 from utils import (
     contrastive_alignment_loss,
@@ -174,7 +175,12 @@ def parse_args():
     parser.add_argument("--alignment-weight", type=float)
     parser.add_argument("--weight-decay", type=float)
     parser.add_argument("--num-workers", type=int)
-    parser.add_argument("--feature-cache", help="Precomputed PoolFormer cache directory")
+    parser.add_argument(
+        "--vision-model",
+        choices=tuple(VISION_MODELS),
+        help="Vision backbone preset",
+    )
+    parser.add_argument("--feature-cache", help="Precomputed vision-feature directory")
     parser.add_argument("--train-limit", type=int)
     parser.add_argument("--val-limit", type=int)
     parser.add_argument("--seed", type=int)
@@ -198,6 +204,8 @@ def main():
     for name, value in overrides.items():
         if value is not None:
             setattr(config, name, value)
+    if args.vision_model is not None:
+        config.vision_model = resolve_vision_model(args.vision_model)
     if args.seed is not None:
         config.seed = args.seed
     if args.num_workers is not None:
@@ -226,8 +234,9 @@ def main():
 
     model = DualGraphFC(config).to(device)
     optimizer = build_optimizer(model, config, weight_decay=config.weight_decay)
+    vision_name = config.vision_model.rsplit("/", 1)[-1]
     checkpoint_path = args.checkpoint or str(
-        Path(config.checkpoint_dir) / "poolformer_s12_best.pt"
+        Path(config.checkpoint_dir) / f"{vision_name}_best.pt"
     )
     history_path = args.history or str(Path(config.log_dir) / "training_history.json")
 

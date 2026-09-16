@@ -163,7 +163,7 @@ def parse_args():
     parser.add_argument("--split", choices=("train", "val", "test"), default="test")
     parser.add_argument("--batch-size", type=int)
     parser.add_argument("--num-workers", type=int)
-    parser.add_argument("--feature-cache", help="Precomputed PoolFormer cache directory")
+    parser.add_argument("--feature-cache", help="Precomputed vision-feature directory")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--device", default="auto")
     return parser.parse_args()

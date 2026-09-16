@@ -1,6 +1,22 @@
 """DualGraphFC configuration."""
 
 
+VISION_MODELS = {
+    "poolformer": "sail/poolformer_s12",
+    "dinov2": "facebook/dinov2-base",
+    "dinov3": "facebook/dinov3-vits16-pretrain-lvd1689m",
+    "convnextv2": "facebook/convnextv2-tiny-22k-224",
+}
+
+
+def resolve_vision_model(name):
+    try:
+        return VISION_MODELS[name]
+    except KeyError as exc:
+        choices = ", ".join(VISION_MODELS)
+        raise ValueError(f"Unknown vision model {name!r}; choose one of: {choices}") from exc
+
+
 class Config:
     # Directory containing train/, val/, and test/ MOCHEG directories.
     data_root = "dataset/mocheg"
@@ -10,7 +26,7 @@ class Config:
     prediction_dir = "outputs/predictions"
 
     text_model = "microsoft/deberta-v3-base"
-    vision_model = "sail/poolformer_s12"
+    vision_model = VISION_MODELS["poolformer"]
     vision_feature_cache_dir = None
     max_text_length = 256
 

@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torch_geometric.nn import SAGEConv
-from transformers import PoolFormerModel
+from transformers import AutoModel
 
 
 class VisionGraphBlock(nn.Module):
@@ -27,7 +27,7 @@ class VisionGraphBlock(nn.Module):
 
 
 class VisionGraph(nn.Module):
-    """Encode images with PoolFormer and reason over spatial feature nodes."""
+    """Encode images with a frozen vision backbone and reason spatially."""
 
     def __init__(self, config, encoder=None):
         super().__init__()
@@ -39,7 +39,7 @@ class VisionGraph(nn.Module):
         self.encoder = (
             encoder
             if encoder is not None
-            else PoolFormerModel.from_pretrained(config.vision_model)
+            else AutoModel.from_pretrained(config.vision_model)
         )
         self.image_size = config.image_size
         self.feature_grid = self._infer_feature_grid(
@@ -47,7 +47,7 @@ class VisionGraph(nn.Module):
             self.encoder.config,
         )
         self.projection = nn.Linear(
-            self.encoder.config.hidden_sizes[-1],
+            self._infer_feature_width(self.encoder.config),
             self.hidden_dim,
         )
         self.encoder.to(dtype=self.projection.weight.dtype)
@@ -71,46 +71,102 @@ class VisionGraph(nn.Module):
 
     @staticmethod
     def _infer_feature_grid(image_size, encoder_config):
-        """Return PoolFormer's final spatial grid for a square input."""
+        """Return the final spatial grid for a supported vision backbone."""
 
         if image_size < 1:
             raise ValueError("image_size must be positive")
 
-        patch_sizes = encoder_config.patch_sizes
-        strides = encoder_config.strides
-        paddings = encoder_config.padding
-        if not (len(patch_sizes) == len(strides) == len(paddings)):
-            raise ValueError("PoolFormer stage configuration lengths must match")
-
-        height = width = image_size
-        for patch_size, stride, padding in zip(
-            patch_sizes,
-            strides,
-            paddings,
+        if all(
+            hasattr(encoder_config, name)
+            for name in ("patch_sizes", "strides", "padding")
         ):
-            patch_height, patch_width = VisionGraph._pair(patch_size)
-            stride_height, stride_width = VisionGraph._pair(stride)
-            padding_height, padding_width = VisionGraph._pair(padding)
-            if min(
-                patch_height,
-                patch_width,
-                stride_height,
-                stride_width,
-            ) < 1:
-                raise ValueError("PoolFormer patch sizes and strides must be positive")
-            height = (height + 2 * padding_height - patch_height) // stride_height + 1
-            width = (width + 2 * padding_width - patch_width) // stride_width + 1
+            patch_sizes = encoder_config.patch_sizes
+            strides = encoder_config.strides
+            paddings = encoder_config.padding
+            if not (len(patch_sizes) == len(strides) == len(paddings)):
+                raise ValueError("Vision stage configuration lengths must match")
+
+            height = width = image_size
+            for patch_size, stride, padding in zip(
+                patch_sizes,
+                strides,
+                paddings,
+            ):
+                patch_height, patch_width = VisionGraph._pair(patch_size)
+                stride_height, stride_width = VisionGraph._pair(stride)
+                padding_height, padding_width = VisionGraph._pair(padding)
+                if min(
+                    patch_height,
+                    patch_width,
+                    stride_height,
+                    stride_width,
+                ) < 1:
+                    raise ValueError("Vision patch sizes and strides must be positive")
+                height = (
+                    height + 2 * padding_height - patch_height
+                ) // stride_height + 1
+                width = (
+                    width + 2 * padding_width - patch_width
+                ) // stride_width + 1
+        elif hasattr(encoder_config, "patch_size"):
+            patch_height, patch_width = VisionGraph._pair(encoder_config.patch_size)
+            height = image_size // patch_height
+            width = image_size // patch_width
+            if getattr(encoder_config, "model_type", None) in {
+                "convnext",
+                "convnextv2",
+            }:
+                num_stages = getattr(
+                    encoder_config,
+                    "num_stages",
+                    len(encoder_config.hidden_sizes),
+                )
+                height //= 2 ** (num_stages - 1)
+                width //= 2 ** (num_stages - 1)
+        else:
+            raise ValueError("The selected vision model has no supported patch layout")
 
         if height < 1 or width < 1:
-            raise ValueError("image_size is too small for the PoolFormer stages")
+            raise ValueError("image_size is too small for the vision backbone")
         return height, width
+
+    @staticmethod
+    def _infer_feature_width(encoder_config):
+        hidden_sizes = getattr(encoder_config, "hidden_sizes", None)
+        if hidden_sizes:
+            return hidden_sizes[-1]
+        hidden_size = getattr(encoder_config, "hidden_size", None)
+        if hidden_size is None:
+            raise ValueError("The selected vision model has no hidden feature width")
+        return hidden_size
+
+    @staticmethod
+    def to_feature_map(last_hidden_state, feature_grid):
+        """Convert CNN maps or ViT patch tokens to ``[B, C, H, W]``."""
+
+        if last_hidden_state.ndim == 4:
+            return last_hidden_state
+        if last_hidden_state.ndim != 3:
+            raise ValueError("Vision features must have three or four dimensions")
+
+        height, width = feature_grid
+        patch_count = height * width
+        if last_hidden_state.size(1) < patch_count:
+            raise ValueError("Vision model returned fewer tokens than spatial patches")
+        patch_tokens = last_hidden_state[:, -patch_count:]
+        return patch_tokens.transpose(1, 2).reshape(
+            last_hidden_state.size(0),
+            last_hidden_state.size(2),
+            height,
+            width,
+        )
 
     @staticmethod
     def _pair(value):
         if isinstance(value, int):
             return value, value
         if len(value) != 2:
-            raise ValueError("PoolFormer spatial parameters must be scalars or pairs")
+            raise ValueError("Vision spatial parameters must be scalars or pairs")
         return value[0], value[1]
 
     def build_edges(self, features):
@@ -158,7 +214,7 @@ class VisionGraph(nn.Module):
 
         ``images`` normally has shape ``[B, M, 3, H, W]``; ``[B, 3, H, W]``
         is accepted as a one-image shorthand. Alternatively, ``feature_maps``
-        accepts cached PoolFormer outputs with shape ``[B, M, C, Hf, Wf]``.
+        accepts cached backbone outputs with shape ``[B, M, C, Hf, Wf]``.
         Each fixed kNN graph is built and processed separately through the
         shared graph blocks. A sample with no valid image receives one valid
         learned no-image token.
@@ -187,7 +243,7 @@ class VisionGraph(nn.Module):
                 raise ValueError("images must have three RGB channels")
             if (height, width) != (self.image_size, self.image_size):
                 raise ValueError(
-                    "images must match the PoolFormer input size "
+                    "images must match the vision-model input size "
                     f"{self.image_size}x{self.image_size}"
                 )
         elif (channels, height, width) != (
@@ -195,7 +251,7 @@ class VisionGraph(nn.Module):
             *self.feature_grid,
         ):
             raise ValueError(
-                "feature_maps must match PoolFormer's final feature shape "
+                "feature_maps must match the vision model's final feature shape "
                 f"{(self.projection.in_features, *self.feature_grid)}"
             )
 
@@ -217,7 +273,7 @@ class VisionGraph(nn.Module):
         if max_images == 0:
             nodes = self.no_image_token.expand(batch_size, 1, -1)
             visual_node_mask = torch.ones(
-                (batch_size, 1), dtype=torch.bool, device=images.device
+                (batch_size, 1), dtype=torch.bool, device=values.device
             )
             details = {
                 "patch_grid": (feature_height, feature_width),
@@ -241,17 +297,20 @@ class VisionGraph(nn.Module):
             if feature_maps is None:
                 with torch.no_grad():
                     encoded = self.encoder(pixel_values=flat_values[valid_indices])
-                valid_feature_maps = encoded.last_hidden_state
+                valid_feature_maps = self.to_feature_map(
+                    encoded.last_hidden_state,
+                    self.feature_grid,
+                )
             else:
                 valid_feature_maps = flat_values[valid_indices]
             if valid_feature_maps.ndim != 4:
                 raise ValueError(
-                    "PoolFormer must return [images, channels, height, width]"
+                    "Vision backbone must return [images, channels, height, width]"
                 )
             if valid_feature_maps.size(1) != self.projection.in_features:
-                raise ValueError("PoolFormer returned an unexpected channel width")
+                raise ValueError("Vision backbone returned an unexpected channel width")
             if tuple(valid_feature_maps.shape[-2:]) != self.feature_grid:
-                raise ValueError("PoolFormer returned an unexpected spatial grid")
+                raise ValueError("Vision backbone returned an unexpected spatial grid")
             valid_feature_maps = valid_feature_maps.to(dtype=self.projection.weight.dtype)
             valid_features = valid_feature_maps.flatten(2).transpose(1, 2).contiguous()
             valid_features = self.projection(valid_features)
@@ -297,7 +356,7 @@ class VisionGraph(nn.Module):
 
         details = {
             # Keep these public names for inference/checkpoint consumers. They
-            # now describe PoolFormer's final spatial feature grid.
+            # describe the backbone's final spatial feature grid.
             "patch_grid": (feature_height, feature_width),
             "patches_per_image": features_per_image,
             "image_mask": image_mask,

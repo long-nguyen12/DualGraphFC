@@ -1,4 +1,4 @@
-"""Extract and save frozen PoolFormer feature maps for MOCHEG images."""
+"""Extract and save frozen vision feature maps for MOCHEG images."""
 
 import argparse
 import json
@@ -7,9 +7,9 @@ from pathlib import Path
 import torch
 from PIL import Image
 from tqdm.auto import tqdm
-from transformers import AutoImageProcessor, PoolFormerModel
+from transformers import AutoImageProcessor, AutoModel
 
-from config import Config
+from config import Config, VISION_MODELS, resolve_vision_model
 from data.dataset import (
     FEATURE_CACHE_METADATA,
     FEATURE_CACHE_VERSION,
@@ -57,9 +57,10 @@ def extract_features(
             "pixel_values"
         ].to(device)
         output = encoder(pixel_values=pixel_values).last_hidden_state
+        output = VisionGraph.to_feature_map(output, feature_shape[-2:])
         if tuple(output.shape[1:]) != feature_shape:
             raise ValueError(
-                f"PoolFormer returned feature shape {tuple(output.shape[1:])}; "
+                f"Vision model returned feature shape {tuple(output.shape[1:])}; "
                 f"expected {feature_shape}"
             )
 
@@ -108,9 +109,15 @@ def precompute_split(
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Extract PoolFormer feature maps into the dataset folder"
+        description="Extract vision feature maps into the dataset folder"
     )
     parser.add_argument("--data-root", default=Config.data_root)
+    parser.add_argument(
+        "--vision-model",
+        choices=tuple(VISION_MODELS),
+        default="poolformer",
+        help="Vision backbone preset (default: poolformer)",
+    )
     parser.add_argument(
         "--split",
         action="append",
@@ -132,12 +139,18 @@ def main():
     else:
         device = torch.device(args.device)
 
-    config = Config(data_root=args.data_root)
-    cache_dir = Path(config.data_root) / "vision_feature"
+    config = Config(
+        data_root=args.data_root,
+        vision_model=resolve_vision_model(args.vision_model),
+    )
+    cache_dir = Path(config.data_root) / "vision_feature" / args.vision_model
     processor = AutoImageProcessor.from_pretrained(config.vision_model)
-    encoder = PoolFormerModel.from_pretrained(config.vision_model).to(device).eval()
+    encoder = AutoModel.from_pretrained(config.vision_model).to(device).eval()
     feature_grid = VisionGraph._infer_feature_grid(config.image_size, encoder.config)
-    feature_shape = (encoder.config.hidden_sizes[-1], *feature_grid)
+    feature_shape = (
+        VisionGraph._infer_feature_width(encoder.config),
+        *feature_grid,
+    )
 
     _write_metadata(
         cache_dir,
@@ -163,7 +176,7 @@ def main():
             args.batch_size,
         )
 
-    print(f"Saved PoolFormer features to {cache_dir.resolve()}")
+    print(f"Saved {args.vision_model} features to {cache_dir.resolve()}")
 
 
 if __name__ == "__main__":

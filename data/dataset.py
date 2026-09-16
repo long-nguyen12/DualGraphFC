@@ -22,7 +22,7 @@ FEATURE_CACHE_METADATA = "metadata.json"
 
 
 def feature_cache_path(cache_dir, split, claim_id):
-    """Return the cached PoolFormer feature path for one claim."""
+    """Return the cached vision-feature path for one claim."""
 
     claim_id = str(claim_id)
     if Path(claim_id).name != claim_id:
@@ -85,7 +85,7 @@ class _ImageTransform:
 
 
 def build_image_transform(image_size=224, vision_model=None):
-    """Return image preprocessing for PoolFormer or a custom vision backbone."""
+    """Return preprocessing for a pretrained vision backbone."""
 
     if vision_model is not None:
         processor = AutoImageProcessor.from_pretrained(vision_model)
