@@ -8,6 +8,7 @@ import re
 from matplotlib.figure import Figure
 import networkx as nx
 import torch
+import torch.nn.functional as F
 from PIL import Image
 from transformers import AutoTokenizer
 
@@ -34,7 +35,7 @@ def load_inference_bundle(checkpoint_path, requested_device="auto"):
     else:
         config = Config()
 
-    tokenizer = AutoTokenizer.from_pretrained(config.text_model)
+    tokenizer = AutoTokenizer.from_pretrained(config.long_text_model)
     model = DualGraphFC(config).to(device)
     load_checkpoint(model, checkpoint, device)
     model.eval()
@@ -47,17 +48,34 @@ def _prepare_images(image_paths, config):
         config.vision_model,
     )
     tensors = []
+    display_tensors = []
     loaded_paths = []
     skipped_paths = []
     for raw_path in image_paths:
         path = Path(raw_path).expanduser()
         try:
             with Image.open(path) as image:
-                tensors.append(transform(image.convert("RGB")))
+                image_tensor = transform(image.convert("RGB"))
+            if not torch.is_tensor(image_tensor):
+                raise TypeError("image transform must return a tensor")
+            tensors.append(image_tensor)
+            display_tensors.append(_to_display_image(image_tensor, transform))
             loaded_paths.append(str(path.resolve()))
         except (FileNotFoundError, OSError):
             skipped_paths.append(str(path))
-    return tensors, loaded_paths, skipped_paths
+    return tensors, display_tensors, loaded_paths, skipped_paths
+
+
+def _to_display_image(image_tensor, transform):
+    """Undo backbone normalization while preserving its resize/crop."""
+
+    display = image_tensor.detach().float().cpu()
+    processor = getattr(transform, "processor", None)
+    if processor is not None and getattr(processor, "do_normalize", False):
+        mean = torch.as_tensor(processor.image_mean).view(-1, 1, 1)
+        std = torch.as_tensor(processor.image_std).view(-1, 1, 1)
+        display = display * std + mean
+    return display.clamp(0.0, 1.0)
 
 
 def _valid_values(values, mask):
@@ -244,8 +262,70 @@ def _save_cross_attention(outputs, text_nodes, image_paths, output_dir):
     return str(path.resolve())
 
 
-def visualize_graphs(outputs, text_nodes, image_paths, output_dir):
-    """Save text, vision, and cross-modal graph visualizations."""
+def _save_image_heatmaps(outputs, display_images, image_paths, output_dir):
+    """Overlay claim-to-vision attention on each preprocessed image."""
+
+    attention = outputs.get("text_to_vision_attention")
+    details = outputs.get("vision_graph")
+    if attention is None or details is None or not display_images:
+        return []
+
+    grid_height, grid_width = details["patch_grid"]
+    features_per_image = details["patches_per_image"]
+    # Average attention heads and use text node zero, which is always the claim.
+    claim_attention = attention[0].mean(dim=0)[0].detach().float().cpu()
+    expected_features = len(display_images) * features_per_image
+    if expected_features > claim_attention.numel():
+        raise ValueError("Cross-attention has fewer visual nodes than expected")
+    used_attention = claim_attention[:expected_features]
+    minimum = used_attention.min()
+    scale = (used_attention.max() - minimum).clamp_min(1e-8)
+    paths = []
+    for image_index, (display_image, image_path) in enumerate(
+        zip(display_images, image_paths)
+    ):
+        start = image_index * features_per_image
+        end = start + features_per_image
+        heatmap = claim_attention[start:end].reshape(
+            1, 1, grid_height, grid_width
+        )
+        heatmap = F.interpolate(
+            heatmap,
+            size=display_image.shape[-2:],
+            mode="bilinear",
+            align_corners=False,
+        )[0, 0]
+        heatmap = ((heatmap - minimum) / scale).clamp(0.0, 1.0)
+        heatmap_values = heatmap.numpy()
+
+        figure = Figure(figsize=(8, 8))
+        axis = figure.subplots()
+        axis.imshow(display_image.permute(1, 2, 0).numpy())
+        overlay = axis.imshow(
+            heatmap_values,
+            cmap="jet",
+            alpha=heatmap_values * 0.65,
+            vmin=0.0,
+            vmax=1.0,
+        )
+        axis.set_title(f"Claim-conditioned heatmap: {Path(image_path).name}")
+        axis.set_axis_off()
+        figure.colorbar(overlay, ax=axis, label="Normalized attention")
+        path = output_dir / f"image_heatmap_{image_index + 1}.png"
+        figure.savefig(path, dpi=180, bbox_inches="tight")
+        figure.clear()
+        paths.append(str(path.resolve()))
+    return paths
+
+
+def visualize_graphs(
+    outputs,
+    text_nodes,
+    image_paths,
+    output_dir,
+    display_images=None,
+):
+    """Save graph, cross-modal, and image-overlay visualizations."""
 
     output_dir = Path(output_dir).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -255,6 +335,14 @@ def visualize_graphs(outputs, text_nodes, image_paths, output_dir):
     if text_path is not None:
         paths.append(text_path)
     paths.extend(_save_vision_graphs(outputs, image_paths, output_dir))
+    paths.extend(
+        _save_image_heatmaps(
+            outputs,
+            display_images or [],
+            image_paths,
+            output_dir,
+        )
+    )
     cross_path = _save_cross_attention(
         outputs, text_nodes, image_paths, output_dir
     )
@@ -295,7 +383,7 @@ def predict(
 
     model.eval()
     evidence = list(evidence or [])
-    image_tensors, loaded_paths, skipped_paths = _prepare_images(
+    image_tensors, display_images, loaded_paths, skipped_paths = _prepare_images(
         image_paths or [], config
     )
     sample = {
@@ -369,6 +457,7 @@ def predict(
             [claim, *evidence],
             loaded_paths,
             visualization_dir,
+            display_images=display_images,
         )
     return result
 

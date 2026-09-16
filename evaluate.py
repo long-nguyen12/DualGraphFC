@@ -26,7 +26,7 @@ def build_dataloader(
     num_workers=0,
 ):
     if tokenizer is None:
-        tokenizer = AutoTokenizer.from_pretrained(config.text_model)
+        tokenizer = AutoTokenizer.from_pretrained(config.long_text_model)
 
     dataset = MochegDataset(
         config.data_root,

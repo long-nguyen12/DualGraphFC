@@ -26,9 +26,11 @@ class Config:
     prediction_dir = "outputs/predictions"
 
     text_model = "microsoft/deberta-v3-base"
+    # long_text_model = "microsoft/deberta-v3-base"
+    long_text_model = "allenai/longformer-base-4096"
     vision_model = VISION_MODELS["poolformer"]
     vision_feature_cache_dir = None
-    max_text_length = 256
+    max_text_length = 4096
 
     image_size = 224
     hidden_dim = 256

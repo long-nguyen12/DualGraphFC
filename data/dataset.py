@@ -303,7 +303,7 @@ class MochegCollator:
 
         encoded = self.tokenizer(
             flat_texts,
-            padding="max_length",
+            padding="longest",
             truncation=True,
             max_length=self.max_text_length,
             return_tensors="pt",

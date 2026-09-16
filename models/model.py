@@ -4,7 +4,7 @@ from torch import nn
 
 from models.cross_graph import CrossGraphReasoner
 from models.fusion import MultimodalFusion
-from models.text_encoder import TextEncoder
+from models.text_encoder import LongTextEncoder
 from models.text_graph import TextGraph
 from models.vision_graph import VisionGraph
 
@@ -14,7 +14,7 @@ class DualGraphFC(nn.Module):
 
     def __init__(self, config, text_backbone=None, vision_backbone=None):
         super().__init__()
-        self.text_encoder = TextEncoder(config, encoder=text_backbone)
+        self.text_encoder = LongTextEncoder(config, encoder=text_backbone)
         self.text_graph = TextGraph(config)
         self.vision_graph = VisionGraph(config, encoder=vision_backbone)
         self.cross_graph = CrossGraphReasoner(config)
