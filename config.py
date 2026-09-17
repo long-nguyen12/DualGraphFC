@@ -50,14 +50,14 @@ class Config:
     seed = 42
 
     transformer_lr = 2e-5
-    graph_lr = 1e-4
+    graph_lr = 3e-5
     weight_decay = 0.01
     max_grad_norm = 1.0
 
-    alignment_weight = 0.1
+    alignment_weight = 0
     temperature = 0.07
 
-    dropout = 0.1
+    dropout = 0.2
     num_classes = 3
 
     def __init__(self, **overrides):
