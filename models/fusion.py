@@ -45,7 +45,8 @@ class MultimodalFusion(nn.Module):
         self,
         text_nodes,
         visual_nodes,
-        consistency_nodes,
+        text_consistency_nodes,
+        visual_consistency_nodes,
         text_mask=None,
         visual_mask=None,
         return_details=False,
@@ -56,9 +57,23 @@ class MultimodalFusion(nn.Module):
         visual_embedding, visual_attention = self.visual_pool(
             visual_nodes, visual_mask, return_attention=True
         )
-        consistency_embedding, consistency_attention = self.consistency_pool(
-            consistency_nodes, text_mask, return_attention=True
+        text_consistency_embedding, text_consistency_attention = (
+            self.consistency_pool(
+                text_consistency_nodes,
+                text_mask,
+                return_attention=True,
+            )
         )
+        visual_consistency_embedding, visual_consistency_attention = (
+            self.consistency_pool(
+                visual_consistency_nodes,
+                visual_mask,
+                return_attention=True,
+            )
+        )
+        consistency_embedding = (
+            text_consistency_embedding + visual_consistency_embedding
+        ) * 0.5
 
         text_gate = torch.sigmoid(self.text_gate(text_embedding))
         visual_gate = torch.sigmoid(self.visual_gate(visual_embedding))
@@ -82,5 +97,6 @@ class MultimodalFusion(nn.Module):
             "visual_gate": visual_gate,
             "text_pool_attention": text_attention,
             "visual_pool_attention": visual_attention,
-            "consistency_pool_attention": consistency_attention,
+            "text_consistency_pool_attention": text_consistency_attention,
+            "visual_consistency_pool_attention": visual_consistency_attention,
         }

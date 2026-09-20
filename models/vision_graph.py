@@ -32,7 +32,6 @@ class VisionGraph(nn.Module):
     def __init__(self, config, encoder=None):
         super().__init__()
         self.hidden_dim = config.hidden_dim
-        self.k = config.vision_knn
         num_layers = config.vision_gnn_layers
         dropout = getattr(config, "dropout", 0.1)
 
@@ -50,12 +49,15 @@ class VisionGraph(nn.Module):
             self._infer_feature_width(self.encoder.config),
             self.hidden_dim,
         )
+        self.register_buffer(
+            "grid_edge_index",
+            self._build_grid_edges(*self.feature_grid),
+            persistent=False,
+        )
         self.encoder.to(dtype=self.projection.weight.dtype)
         self.encoder.requires_grad_(False)
         self.encoder.eval()
 
-        if self.k < 0:
-            raise ValueError("vision_knn must be non-negative")
         if num_layers < 1:
             raise ValueError("vision_gnn_layers must be at least 1")
         self.blocks = nn.ModuleList(
@@ -169,8 +171,34 @@ class VisionGraph(nn.Module):
             raise ValueError("Vision spatial parameters must be scalars or pairs")
         return value[0], value[1]
 
+    @staticmethod
+    def _build_grid_edges(height, width):
+        """Build a fixed bidirectional 8-neighbour spatial grid."""
+
+        if height < 1 or width < 1:
+            raise ValueError("grid dimensions must be positive")
+
+        sources = []
+        targets = []
+        for row in range(height):
+            for column in range(width):
+                source = row * width + column
+                for row_offset in (-1, 0, 1):
+                    for column_offset in (-1, 0, 1):
+                        if row_offset == 0 and column_offset == 0:
+                            continue
+                        target_row = row + row_offset
+                        target_column = column + column_offset
+                        if 0 <= target_row < height and 0 <= target_column < width:
+                            sources.append(source)
+                            targets.append(target_row * width + target_column)
+
+        if not sources:
+            return torch.empty((2, 0), dtype=torch.long)
+        return torch.tensor((sources, targets), dtype=torch.long)
+
     def build_edges(self, features):
-        """Build a safe bidirectional cosine-kNN spatial graph.
+        """Return the fixed grid graph for one image's spatial features.
 
         Args:
             features: Spatial features with shape ``[num_nodes, hidden_dim]``.
@@ -182,25 +210,12 @@ class VisionGraph(nn.Module):
 
         if features.ndim != 2:
             raise ValueError("features must have shape [visual_nodes, hidden_dim]")
-        num_nodes = features.size(0)
-        if num_nodes < 1:
-            raise ValueError("a visual graph must contain at least one node")
-
-        neighbors_per_node = min(self.k, num_nodes - 1)
-        if neighbors_per_node == 0:
-            return torch.empty((2, 0), dtype=torch.long, device=features.device)
-
-        normalized = F.normalize(features, p=2, dim=-1, eps=1e-12)
-        similarity = normalized @ normalized.transpose(0, 1)
-        similarity.fill_diagonal_(float("-inf"))
-        neighbors = similarity.topk(neighbors_per_node, dim=-1).indices
-        source_nodes = torch.arange(num_nodes, device=features.device)
-        source_nodes = source_nodes.unsqueeze(1).expand_as(neighbors)
-
-        sources = torch.cat((source_nodes.reshape(-1), neighbors.reshape(-1)))
-        targets = torch.cat((neighbors.reshape(-1), source_nodes.reshape(-1)))
-        edge_index = torch.stack((sources, targets))
-        return torch.unique(edge_index.transpose(0, 1), dim=0).transpose(0, 1).contiguous()
+        expected_nodes = self.feature_grid[0] * self.feature_grid[1]
+        if features.size(0) != expected_nodes:
+            raise ValueError(
+                f"visual node count must match the feature grid ({expected_nodes})"
+            )
+        return self.grid_edge_index.to(features.device)
 
     def forward(
         self,
@@ -215,7 +230,7 @@ class VisionGraph(nn.Module):
         ``images`` normally has shape ``[B, M, 3, H, W]``; ``[B, 3, H, W]``
         is accepted as a one-image shorthand. Alternatively, ``feature_maps``
         accepts cached backbone outputs with shape ``[B, M, C, Hf, Wf]``.
-        Each fixed kNN graph is built and processed separately through the
+        Each fixed spatial grid is processed separately through the
         shared graph blocks. A sample with no valid image receives one valid
         learned no-image token.
 

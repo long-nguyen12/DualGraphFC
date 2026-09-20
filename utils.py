@@ -7,6 +7,55 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
+from torch import nn
+
+
+class FocalLoss(nn.Module):
+    """Class-weighted multiclass focal loss."""
+
+    def __init__(self, gamma=2.0, weight=None):
+        super().__init__()
+        if gamma < 0:
+            raise ValueError("focal gamma must be non-negative")
+        self.gamma = gamma
+        if weight is not None:
+            weight = torch.as_tensor(weight, dtype=torch.float32)
+            if weight.ndim != 1 or (weight <= 0).any():
+                raise ValueError(
+                    "class weights must be a positive one-dimensional tensor"
+                )
+        self.register_buffer("weight", weight)
+
+    def forward(self, logits, targets):
+        if logits.ndim != 2:
+            raise ValueError("logits must have shape [batch, classes]")
+        if targets.shape != (logits.size(0),):
+            raise ValueError("targets must have shape [batch]")
+        if self.weight is not None and self.weight.numel() != logits.size(1):
+            raise ValueError("class weights must match the number of classes")
+
+        log_probabilities = F.log_softmax(logits, dim=-1)
+        target_log_probabilities = log_probabilities.gather(
+            1, targets.unsqueeze(1)
+        ).squeeze(1)
+        focal_factor = (1.0 - target_log_probabilities.exp()).pow(self.gamma)
+        losses = -focal_factor * target_log_probabilities
+
+        if self.weight is None:
+            return losses.mean()
+        sample_weights = self.weight[targets]
+        return (losses * sample_weights).sum() / sample_weights.sum().clamp_min(
+            1e-12
+        )
+
+
+def build_classification_loss(config, device):
+    """Build the configured focal classification objective."""
+
+    return FocalLoss(
+        gamma=getattr(config, "focal_gamma", 2.0),
+        weight=getattr(config, "class_weights", None),
+    ).to(device)
 
 
 def set_seed(seed):

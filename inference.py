@@ -430,8 +430,11 @@ def predict(
         "image_attention": _valid_values(
             outputs.get("visual_pool_attention"), visual_mask
         ),
-        "consistency_attention": _valid_values(
-            outputs.get("consistency_pool_attention"), text_mask
+        "text_consistency_attention": _valid_values(
+            outputs.get("text_consistency_pool_attention"), text_mask
+        ),
+        "image_consistency_attention": _valid_values(
+            outputs.get("visual_consistency_pool_attention"), visual_mask
         ),
         "text_gat_attention": _serialize_text_gat(
             outputs.get("text_gat_attention")

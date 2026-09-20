@@ -33,13 +33,13 @@ class Config:
     max_text_length = 4096
 
     image_size = 224
-    hidden_dim = 256
+    hidden_dim = 512
+    text_finetune_layers = 1
 
     text_gnn_layers = 2
     text_gnn_heads = 4
     text_graph_k = 3
 
-    vision_knn = 9
     vision_gnn_layers = 4
 
     cross_heads = 4
@@ -49,10 +49,17 @@ class Config:
     num_workers = 0
     seed = 42
 
-    transformer_lr = 2e-5
+    transformer_lr = 5e-6
     graph_lr = 3e-5
     weight_decay = 0.01
     max_grad_norm = 1.0
+    scheduler_factor = 0.5
+    scheduler_patience = 2
+    min_lr = 1e-6
+
+    focal_gamma = 2.0
+    # Label order: supported, refuted, not enough information.
+    class_weights = (1.017, 0.856, 1.178)
 
     alignment_weight = 0
     temperature = 0.07

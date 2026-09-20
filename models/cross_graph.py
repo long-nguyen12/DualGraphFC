@@ -5,7 +5,7 @@ from torch import nn
 
 
 class CrossGraphReasoner(nn.Module):
-    """Align both graphs and form text-side multimodal consistency nodes."""
+    """Align both graphs and form symmetric multimodal consistency nodes."""
 
     def __init__(self, config):
         super().__init__()
@@ -82,7 +82,7 @@ class CrossGraphReasoner(nn.Module):
 
         text_context = self.text_norm(text_nodes + self.dropout(matched_visual))
         visual_context = self.vision_norm(visual_nodes + self.dropout(matched_text))
-        consistency_nodes = self.consistency(
+        text_consistency_nodes = self.consistency(
             torch.cat(
                 (
                     text_nodes,
@@ -93,13 +93,25 @@ class CrossGraphReasoner(nn.Module):
                 dim=-1,
             )
         )
+        visual_consistency_nodes = self.consistency(
+            torch.cat(
+                (
+                    visual_nodes,
+                    matched_text,
+                    torch.abs(visual_nodes - matched_text),
+                    visual_nodes * matched_text,
+                ),
+                dim=-1,
+            )
+        )
 
         text_scale = text_mask.unsqueeze(-1).to(text_nodes.dtype)
         visual_scale = visual_mask.unsqueeze(-1).to(visual_nodes.dtype)
         return {
             "text_nodes": text_context * text_scale,
             "visual_nodes": visual_context * visual_scale,
-            "consistency_nodes": consistency_nodes * text_scale,
+            "text_consistency_nodes": text_consistency_nodes * text_scale,
+            "visual_consistency_nodes": visual_consistency_nodes * visual_scale,
             "text_to_vision_attention": text_to_vision_attention,
             "vision_to_text_attention": vision_to_text_attention,
         }

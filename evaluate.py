@@ -13,7 +13,7 @@ from tqdm.auto import tqdm
 from transformers import AutoTokenizer
 
 from data.dataset import ID_TO_LABEL, MochegCollator, MochegDataset
-from utils import move_batch_to_device, save_json
+from utils import build_classification_loss, move_batch_to_device, save_json
 
 
 def build_dataloader(
@@ -100,7 +100,7 @@ def compute_metrics(labels, predictions, num_classes=3):
 
 
 @torch.no_grad()
-def evaluate_model(model, dataloader, device, num_classes=3):
+def evaluate_model(model, dataloader, device, num_classes=3, criterion=None):
     model.eval()
     labels = []
     predictions = []
@@ -116,7 +116,11 @@ def evaluate_model(model, dataloader, device, num_classes=3):
 
         logits = model(batch)
         targets = batch["labels"]
-        loss = F.cross_entropy(logits, targets)
+        loss = (
+            F.cross_entropy(logits, targets)
+            if criterion is None
+            else criterion(logits, targets)
+        )
 
         total_loss += loss.item() * batch_size
         total_examples += batch_size
@@ -200,7 +204,14 @@ def main():
     )
     model = DualGraphFC(config).to(device)
     load_checkpoint(model, checkpoint, device)
-    metrics = evaluate_model(model, dataloader, device, num_classes=config.num_classes)
+    criterion = build_classification_loss(config, device)
+    metrics = evaluate_model(
+        model,
+        dataloader,
+        device,
+        num_classes=config.num_classes,
+        criterion=criterion,
+    )
 
     output_path = args.output or str(
         Path(config.prediction_dir) / f"{args.split}_metrics.json"

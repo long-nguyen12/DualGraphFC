@@ -67,7 +67,8 @@ class DualGraphFC(nn.Module):
         fusion_output = self.fusion(
             cross_output["text_nodes"],
             cross_output["visual_nodes"],
-            cross_output["consistency_nodes"],
+            cross_output["text_consistency_nodes"],
+            cross_output["visual_consistency_nodes"],
             text_mask=text_mask,
             visual_mask=visual_mask,
             return_details=return_details or return_attention,

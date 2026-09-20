@@ -72,11 +72,38 @@ class LongTextEncoder(nn.Module):
         )
         self.encoder.to(dtype=self.projection.weight.dtype)
         self.encoder.requires_grad_(False)
+        self.finetuned_layers = self._unfreeze_last_layers(
+            getattr(config, "text_finetune_layers", 0)
+        )
         self.encoder.eval()
+
+    def _unfreeze_last_layers(self, count):
+        if count < 0:
+            raise ValueError("text_finetune_layers must be non-negative")
+        if count == 0:
+            return ()
+
+        transformer_encoder = getattr(self.encoder, "encoder", None)
+        layers = getattr(transformer_encoder, "layer", None)
+        if layers is None:
+            raise ValueError(
+                "The selected text model does not expose encoder.layer for fine-tuning"
+            )
+        if count > len(layers):
+            raise ValueError(
+                "text_finetune_layers exceeds the text model's layer count"
+            )
+
+        selected = tuple(layers[-count:])
+        for layer in selected:
+            layer.requires_grad_(True)
+        return selected
 
     def train(self, mode=True):
         super().train(mode)
         self.encoder.eval()
+        for layer in self.finetuned_layers:
+            layer.train(mode)
         return self
 
     def _encode(self, input_ids, attention_mask):
@@ -89,8 +116,11 @@ class LongTextEncoder(nn.Module):
             global_attention_mask[:, 0] = attention_mask[:, 0]
             model_inputs["global_attention_mask"] = global_attention_mask
 
-        with torch.no_grad():
+        if self.finetuned_layers:
             outputs = self.encoder(**model_inputs)
+        else:
+            with torch.no_grad():
+                outputs = self.encoder(**model_inputs)
         return self.projection(outputs.last_hidden_state[:, 0])
 
     def forward(self, input_ids, attention_mask, node_mask=None):

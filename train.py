@@ -2,12 +2,12 @@ import argparse
 from pathlib import Path
 
 import torch
-import torch.nn.functional as F
 from tqdm.auto import tqdm
 
 from config import VISION_MODELS, resolve_vision_model
 from evaluate import build_dataloader, evaluate_model, load_checkpoint
 from utils import (
+    build_classification_loss,
     contrastive_alignment_loss,
     move_batch_to_device,
     save_json,
@@ -45,8 +45,28 @@ def build_optimizer(model, config, weight_decay=0.01):
     return torch.optim.AdamW(parameter_groups, weight_decay=weight_decay)
 
 
-def train_one_epoch(model, dataloader, optimizer, device, config, epoch):
+def build_scheduler(optimizer, config):
+    return torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="max",
+        factor=config.scheduler_factor,
+        patience=config.scheduler_patience,
+        min_lr=config.min_lr,
+    )
+
+
+def train_one_epoch(
+    model,
+    dataloader,
+    optimizer,
+    device,
+    config,
+    epoch,
+    criterion=None,
+):
     model.train()
+    if criterion is None:
+        criterion = build_classification_loss(config, device)
     use_alignment = config.alignment_weight > 0
     totals = {"loss": 0.0, "classification_loss": 0.0, "alignment_loss": 0.0}
     total_examples = 0
@@ -73,7 +93,7 @@ def train_one_epoch(model, dataloader, optimizer, device, config, epoch):
             logits = model(batch)
             alignment_loss = logits.new_zeros(())
 
-        classification_loss = F.cross_entropy(logits, batch["labels"])
+        classification_loss = criterion(logits, batch["labels"])
         loss = classification_loss + config.alignment_weight * alignment_loss
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
@@ -92,19 +112,27 @@ def train_one_epoch(model, dataloader, optimizer, device, config, epoch):
     return {name: value / total_examples for name, value in totals.items()}
 
 
-def save_checkpoint(model, optimizer, epoch, best_macro_f1, config, path):
+def save_checkpoint(
+    model,
+    optimizer,
+    epoch,
+    best_macro_f1,
+    config,
+    path,
+    scheduler=None,
+):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "epoch": epoch,
-            "best_macro_f1": best_macro_f1,
-            "config": config.to_dict(),
-        },
-        path,
-    )
+    checkpoint = {
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "epoch": epoch,
+        "best_macro_f1": best_macro_f1,
+        "config": config.to_dict(),
+    }
+    if scheduler is not None:
+        checkpoint["scheduler_state_dict"] = scheduler.state_dict()
+    torch.save(checkpoint, path)
 
 
 def fit(
@@ -116,32 +144,53 @@ def fit(
     config,
     checkpoint_path,
     history_path=None,
+    criterion=None,
+    scheduler=None,
 ):
     """Train and retain the checkpoint with the highest validation macro-F1."""
 
+    if criterion is None:
+        criterion = build_classification_loss(config, device)
+    if scheduler is None:
+        scheduler = build_scheduler(optimizer, config)
     history = []
     best_macro_f1 = float("-inf")
 
     for epoch in range(1, config.epochs + 1):
         train_metrics = train_one_epoch(
-            model, train_loader, optimizer, device, config, epoch=epoch
+            model,
+            train_loader,
+            optimizer,
+            device,
+            config,
+            epoch=epoch,
+            criterion=criterion,
         )
         validation_metrics = evaluate_model(
             model,
             val_loader,
             device,
             num_classes=config.num_classes,
+            criterion=criterion,
         )
         record = {
             "epoch": epoch,
             "train": train_metrics,
             "validation": validation_metrics,
+            "learning_rates": [
+                parameter_group["lr"]
+                for parameter_group in optimizer.param_groups
+            ],
         }
         history.append(record)
 
         macro_f1 = validation_metrics["macro_f1"]
-        if macro_f1 > best_macro_f1:
+        improved = macro_f1 > best_macro_f1
+        if improved:
             best_macro_f1 = macro_f1
+        if scheduler is not None:
+            scheduler.step(macro_f1)
+        if improved:
             save_checkpoint(
                 model,
                 optimizer,
@@ -149,6 +198,7 @@ def fit(
                 best_macro_f1,
                 config,
                 checkpoint_path,
+                scheduler=scheduler,
             )
 
         if history_path is not None:
@@ -234,6 +284,8 @@ def main():
 
     model = DualGraphFC(config).to(device)
     optimizer = build_optimizer(model, config, weight_decay=config.weight_decay)
+    scheduler = build_scheduler(optimizer, config)
+    criterion = build_classification_loss(config, device)
     vision_name = config.vision_model.rsplit("/", 1)[-1]
     checkpoint_path = args.checkpoint or str(
         Path(config.checkpoint_dir) / f"{vision_name}_best.pt"
@@ -249,6 +301,8 @@ def main():
         config,
         checkpoint_path,
         history_path,
+        criterion=criterion,
+        scheduler=scheduler,
     )
     print(f"Best validation macro-F1: {best_macro_f1:.4f}")
     print(f"Saved best checkpoint to {checkpoint_path}")
