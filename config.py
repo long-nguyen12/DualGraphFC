@@ -26,9 +26,9 @@ class Config:
     prediction_dir = "outputs/predictions"
 
     text_model = "microsoft/deberta-v3-base"
-    # long_text_model = "microsoft/deberta-v3-base"
     long_text_model = "allenai/longformer-base-4096"
-    vision_model = VISION_MODELS["poolformer"]
+    
+    vision_model = VISION_MODELS["dinov2"]
     vision_feature_cache_dir = None
     max_text_length = 4096
 
@@ -49,10 +49,11 @@ class Config:
     num_workers = 0
     seed = 42
 
-    transformer_lr = 5e-6
-    graph_lr = 3e-5
+    transformer_lr = 1e-5
+    graph_lr = 1e-5
     weight_decay = 0.01
     max_grad_norm = 1.0
+    # Retained so configurations stored by older checkpoints remain loadable.
     scheduler_factor = 0.5
     scheduler_patience = 2
     min_lr = 1e-6
@@ -61,7 +62,7 @@ class Config:
     # Label order: supported, refuted, not enough information.
     class_weights = (1.017, 0.856, 1.178)
 
-    alignment_weight = 0
+    alignment_weight = 0.1
     temperature = 0.07
 
     dropout = 0.2

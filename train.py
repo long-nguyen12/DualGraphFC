@@ -46,12 +46,10 @@ def build_optimizer(model, config, weight_decay=0.01):
 
 
 def build_scheduler(optimizer, config):
-    return torch.optim.lr_scheduler.ReduceLROnPlateau(
+    return torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
-        mode="max",
-        factor=config.scheduler_factor,
-        patience=config.scheduler_patience,
-        min_lr=config.min_lr,
+        T_max=config.epochs,
+        eta_min=config.min_lr,
     )
 
 
@@ -189,7 +187,7 @@ def fit(
         if improved:
             best_macro_f1 = macro_f1
         if scheduler is not None:
-            scheduler.step(macro_f1)
+            scheduler.step()
         if improved:
             save_checkpoint(
                 model,
