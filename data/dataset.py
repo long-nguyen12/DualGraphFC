@@ -114,6 +114,7 @@ class MochegDataset(Dataset):
         vision_model=None,
         image_transform=None,
         feature_cache_dir=None,
+        retrieved_text_dir=None,
         limit=None,
     ):
         self.split = split
@@ -135,7 +136,10 @@ class MochegDataset(Dataset):
             )
             self.image_transform = None
 
-        self.samples = MochegLoader(root).load_split(split, limit=limit)
+        self.samples = MochegLoader(
+            root,
+            retrieved_text_dir=retrieved_text_dir,
+        ).load_split(split, limit=limit)
 
     def __len__(self):
         return len(self.samples)
@@ -161,6 +165,7 @@ class MochegDataset(Dataset):
             "split": source["split"],
             "cleaned_truthfulness": source["cleaned_truthfulness"],
             "text_evidence_ids": evidence_ids,
+            "text_evidence_source": source["text_evidence_source"],
             "image_evidence_ids": image_ids,
             "image_paths": image_paths,
             "skipped_image_paths": skipped_paths,

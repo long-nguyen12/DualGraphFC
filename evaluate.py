@@ -34,6 +34,7 @@ def build_dataloader(
         image_size=config.image_size,
         vision_model=config.vision_model,
         feature_cache_dir=getattr(config, "vision_feature_cache_dir", None),
+        retrieved_text_dir=getattr(config, "retrieved_text_dir", None),
         limit=limit,
     )
     if len(dataset) == 0:
@@ -168,6 +169,10 @@ def parse_args():
     parser.add_argument("--batch-size", type=int)
     parser.add_argument("--num-workers", type=int)
     parser.add_argument("--feature-cache", help="Precomputed vision-feature directory")
+    parser.add_argument(
+        "--retrieved-text-dir",
+        help="Directory containing split-specific retrieved-text CSV files",
+    )
     parser.add_argument("--limit", type=int)
     parser.add_argument("--device", default="auto")
     return parser.parse_args()
@@ -194,6 +199,8 @@ def main():
         config.num_workers = args.num_workers
     if args.feature_cache is not None:
         config.vision_feature_cache_dir = args.feature_cache
+    if args.retrieved_text_dir is not None:
+        config.retrieved_text_dir = args.retrieved_text_dir
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dataloader, _ = build_dataloader(

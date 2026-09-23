@@ -9,8 +9,13 @@ class MochegDataset:
 
     SPLITS = ("train", "val", "test")
 
-    def __init__(self, root):
+    def __init__(self, root, retrieved_text_dir=None):
         self.root = Path(root).expanduser().resolve()
+        self.retrieved_text_dir = (
+            Path(retrieved_text_dir).expanduser().resolve()
+            if retrieved_text_dir is not None
+            else None
+        )
         self._splits = {}
         self._claims = {}
 
@@ -81,6 +86,13 @@ class MochegDataset:
                     sample["text_evidence"].append(evidence)
                     sample["text_evidence_ids"].append(evidence_id)
 
+        for sample in samples.values():
+            sample["text_evidence_source"] = (
+                "original" if sample["text_evidence"] else "missing"
+            )
+        if self.retrieved_text_dir is not None:
+            self._load_retrieved_text(split, samples)
+
         image_dir = self.root / split / "images"
         samples_by_numeric_id = {}
         for claim_id, sample in samples.items():
@@ -90,12 +102,14 @@ class MochegDataset:
                 continue
 
         image_paths = list(image_dir.iterdir()) if image_dir.is_dir() else []
-        for extension in ("jpg", "jpeg", "png"):
+        for extension in ("jpg", "jpeg", "jfif", "png"):
             matching_paths = sorted(
                 (
                     image_path
                     for image_path in image_paths
                     if image_path.suffix == f".{extension}"
+                    and len(image_path.name.split("-", 2)) >= 3
+                    and image_path.name.split("-", 2)[1] == "proof"
                 ),
                 key=lambda image_path: image_path.name,
             )
@@ -117,6 +131,65 @@ class MochegDataset:
 
         self._claims[split] = samples
         self._splits[split] = list(samples.values())
+
+    def _load_retrieved_text(self, split, samples):
+        missing_claim_ids = {
+            claim_id
+            for claim_id, sample in samples.items()
+            if not sample["text_evidence"]
+        }
+        if not missing_claim_ids:
+            return
+
+        path = self.retrieved_text_dir / f"{split}.csv"
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"Retrieved text was not found at {path}; run "
+                "retrieve_mocheg_text.py first"
+            )
+
+        retrieved = {claim_id: [] for claim_id in missing_claim_ids}
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            required = {"claim_id", "rank", "corpus_id", "text"}
+            if reader.fieldnames is None or not required.issubset(reader.fieldnames):
+                raise ValueError(
+                    f"Retrieved-text file {path} must contain: "
+                    f"{', '.join(sorted(required))}"
+                )
+            for row in reader:
+                claim_id = row["claim_id"]
+                text = row["text"].strip()
+                if claim_id not in retrieved or not text:
+                    continue
+                try:
+                    rank = int(row["rank"])
+                except ValueError as exc:
+                    raise ValueError(
+                        f"Invalid retrieval rank for claim {claim_id!r}: "
+                        f"{row['rank']!r}"
+                    ) from exc
+                retrieved[claim_id].append((rank, row["corpus_id"], text))
+
+        unresolved = []
+        for claim_id in missing_claim_ids:
+            rows = sorted(retrieved[claim_id], key=lambda row: (row[0], row[1]))
+            if not rows:
+                unresolved.append(claim_id)
+                continue
+            sample = samples[claim_id]
+            sample["text_evidence"] = [row[2] for row in rows]
+            sample["text_evidence_ids"] = [
+                f"retrieved:{row[1]}" for row in rows
+            ]
+            sample["text_evidence_source"] = "retrieved"
+
+        if unresolved:
+            preview = ", ".join(sorted(unresolved)[:10])
+            raise ValueError(
+                f"Retrieved-text file {path} has no evidence for "
+                f"{len(unresolved)} missing claims (first IDs: {preview})"
+            )
 
     def _check_split(self, split):
         if split not in self.SPLITS:

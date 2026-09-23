@@ -229,6 +229,10 @@ def parse_args():
         help="Vision backbone preset",
     )
     parser.add_argument("--feature-cache", help="Precomputed vision-feature directory")
+    parser.add_argument(
+        "--retrieved-text-dir",
+        help="Directory containing split-specific retrieved-text CSV files",
+    )
     parser.add_argument("--train-limit", type=int)
     parser.add_argument("--val-limit", type=int)
     parser.add_argument("--seed", type=int)
@@ -260,6 +264,8 @@ def main():
         config.num_workers = args.num_workers
     if args.feature_cache is not None:
         config.vision_feature_cache_dir = args.feature_cache
+    if args.retrieved_text_dir is not None:
+        config.retrieved_text_dir = args.retrieved_text_dir
     if args.weight_decay is not None:
         config.weight_decay = args.weight_decay
 
