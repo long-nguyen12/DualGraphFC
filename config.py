@@ -45,13 +45,13 @@ class Config:
 
     cross_heads = 4
 
-    batch_size = 16
+    batch_size = 8
     epochs = 30
     num_workers = 0
     seed = 42
 
     transformer_lr = 1e-5
-    graph_lr = 1e-5
+    graph_lr = 5e-5
     weight_decay = 0.01
     max_grad_norm = 1.0
     # Retained so configurations stored by older checkpoints remain loadable.
