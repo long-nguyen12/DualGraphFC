@@ -258,10 +258,8 @@ def main():
     scheduler = build_scheduler(optimizer, config)
     criterion = build_classification_loss(config, device)
     vision_name = config.vision_model.rsplit("/", 1)[-1]
-    checkpoint_path = args.checkpoint or str(
-        Path(config.checkpoint_dir) / f"{vision_name}_best.pt"
-    )
-    history_path = args.history or str(Path(config.log_dir) / "training_history.json")
+    checkpoint_path = str(Path(config.checkpoint_dir) / f"{vision_name}_best.pt")
+    history_path = str(Path(config.log_dir) / "training_history.json")
 
     _, best_macro_f1 = fit(
         model,
