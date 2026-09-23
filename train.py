@@ -241,14 +241,12 @@ def main():
         config,
         "train",
         shuffle=True,
-        limit=args.train_limit,
         num_workers=config.num_workers,
     )
     val_loader, _ = build_dataloader(
         config,
         "val",
         tokenizer=tokenizer,
-        limit=args.val_limit,
         num_workers=config.num_workers,
     )
 
