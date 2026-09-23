@@ -10,13 +10,16 @@ from models.vision_graph import VisionGraph
 
 
 class DualGraphFC(nn.Module):
-    """Dual text/vision graph fact checker."""
-
-    def __init__(self, config, text_backbone=None, vision_backbone=None):
+    def __init__(
+        self,
+        config,
+        text_backbone=None,
+        vision_feature_shape=None,
+    ):
         super().__init__()
         self.text_encoder = LongTextEncoder(config, encoder=text_backbone)
         self.text_graph = TextGraph(config)
-        self.vision_graph = VisionGraph(config, encoder=vision_backbone)
+        self.vision_graph = VisionGraph(config, feature_shape=vision_feature_shape)
         self.cross_graph = CrossGraphReasoner(config)
         self.fusion = MultimodalFusion(config)
 
@@ -45,11 +48,10 @@ class DualGraphFC(nn.Module):
             text_attention = None
 
         vision_result = self.vision_graph(
-            images=batch.get("images"),
+            feature_maps=batch.get("image_features"),
             image_mask=batch["image_mask"],
             return_mask=True,
             return_details=return_attention,
-            feature_maps=batch.get("image_features"),
         )
         if return_attention:
             visual_nodes, visual_mask, vision_details = vision_result

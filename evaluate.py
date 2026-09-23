@@ -153,7 +153,12 @@ def load_checkpoint(model, checkpoint_or_path, device):
         checkpoint = checkpoint_or_path
         if not isinstance(checkpoint, dict) or "model_state_dict" not in checkpoint:
             raise ValueError("Checkpoint does not contain 'model_state_dict'")
-    model.load_state_dict(checkpoint["model_state_dict"])
+    state_dict = {
+        name: value
+        for name, value in checkpoint["model_state_dict"].items()
+        if not name.startswith("vision_graph.encoder.")
+    }
+    model.load_state_dict(state_dict)
     return checkpoint
 
 
@@ -201,6 +206,11 @@ def main():
         config.vision_feature_cache_dir = args.feature_cache
     if args.retrieved_text_dir is not None:
         config.retrieved_text_dir = args.retrieved_text_dir
+    if config.vision_feature_cache_dir is None:
+        raise ValueError(
+            "A vision feature cache is required. Pass --feature-cache or set "
+            "vision_feature_cache_dir in the saved configuration."
+        )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dataloader, _ = build_dataloader(
@@ -209,7 +219,10 @@ def main():
         limit=args.limit,
         num_workers=config.num_workers,
     )
-    model = DualGraphFC(config).to(device)
+    model = DualGraphFC(
+        config,
+        vision_feature_shape=dataloader.dataset.feature_shape,
+    ).to(device)
     load_checkpoint(model, checkpoint, device)
     criterion = build_classification_loss(config, device)
     metrics = evaluate_model(

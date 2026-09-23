@@ -1,5 +1,3 @@
-"""Transformer encoder for claim and evidence graph nodes."""
-
 import torch
 from torch import nn
 from transformers import AutoModel
@@ -85,14 +83,6 @@ class LongTextEncoder(nn.Module):
 
         transformer_encoder = getattr(self.encoder, "encoder", None)
         layers = getattr(transformer_encoder, "layer", None)
-        if layers is None:
-            raise ValueError(
-                "The selected text model does not expose encoder.layer for fine-tuning"
-            )
-        if count > len(layers):
-            raise ValueError(
-                "text_finetune_layers exceeds the text model's layer count"
-            )
 
         selected = tuple(layers[-count:])
         for layer in selected:
@@ -126,8 +116,6 @@ class LongTextEncoder(nn.Module):
     def forward(self, input_ids, attention_mask, node_mask=None):
         if input_ids.ndim == 2:
             return self._encode(input_ids, attention_mask)
-        if input_ids.ndim != 3:
-            raise ValueError("input_ids must have two or three dimensions")
 
         batch_size, num_nodes, sequence_length = input_ids.shape
         flat_ids = input_ids.reshape(batch_size * num_nodes, sequence_length)

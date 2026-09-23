@@ -176,8 +176,7 @@ def fit(
             "train": train_metrics,
             "validation": validation_metrics,
             "learning_rates": [
-                parameter_group["lr"]
-                for parameter_group in optimizer.param_groups
+                parameter_group["lr"] for parameter_group in optimizer.param_groups
             ],
         }
         history.append(record)
@@ -213,29 +212,12 @@ def fit(
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train DualGraphFC on MOCHEG")
-    parser.add_argument("--data-root", help="Directory containing MOCHEG splits")
-    parser.add_argument("--checkpoint", help="Best-checkpoint output path")
-    parser.add_argument("--history", help="Training-history JSON path")
-    parser.add_argument("--epochs", type=int)
-    parser.add_argument("--batch-size", type=int)
-    parser.add_argument("--transformer-lr", type=float)
-    parser.add_argument("--graph-lr", type=float)
-    parser.add_argument("--alignment-weight", type=float)
-    parser.add_argument("--weight-decay", type=float)
-    parser.add_argument("--num-workers", type=int)
-    parser.add_argument(
-        "--vision-model",
-        choices=tuple(VISION_MODELS),
-        help="Vision backbone preset",
-    )
+
     parser.add_argument("--feature-cache", help="Precomputed vision-feature directory")
     parser.add_argument(
         "--retrieved-text-dir",
         help="Directory containing split-specific retrieved-text CSV files",
     )
-    parser.add_argument("--train-limit", type=int)
-    parser.add_argument("--val-limit", type=int)
-    parser.add_argument("--seed", type=int)
     return parser.parse_args()
 
 
@@ -245,29 +227,13 @@ def main():
 
     args = parse_args()
     config = Config()
-    overrides = {
-        "data_root": args.data_root,
-        "epochs": args.epochs,
-        "batch_size": args.batch_size,
-        "transformer_lr": args.transformer_lr,
-        "graph_lr": args.graph_lr,
-        "alignment_weight": args.alignment_weight,
-    }
-    for name, value in overrides.items():
-        if value is not None:
-            setattr(config, name, value)
-    if args.vision_model is not None:
-        config.vision_model = resolve_vision_model(args.vision_model)
-    if args.seed is not None:
-        config.seed = args.seed
-    if args.num_workers is not None:
-        config.num_workers = args.num_workers
-    if args.feature_cache is not None:
-        config.vision_feature_cache_dir = args.feature_cache
-    if args.retrieved_text_dir is not None:
-        config.retrieved_text_dir = args.retrieved_text_dir
-    if args.weight_decay is not None:
-        config.weight_decay = args.weight_decay
+
+    if args.feature_cache is None:
+        raise ValueError(
+            "A vision feature cache is required. Pass --feature-cache or set "
+            "vision_feature_cache_dir in config.py."
+        )
+    config.vision_feature_cache_dir = args.feature_cache
 
     set_seed(config.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -286,7 +252,10 @@ def main():
         num_workers=config.num_workers,
     )
 
-    model = DualGraphFC(config).to(device)
+    model = DualGraphFC(
+        config,
+        vision_feature_shape=train_loader.dataset.feature_shape,
+    ).to(device)
     optimizer = build_optimizer(model, config, weight_decay=config.weight_decay)
     scheduler = build_scheduler(optimizer, config)
     criterion = build_classification_loss(config, device)

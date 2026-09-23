@@ -1,5 +1,3 @@
-"""Extract and save frozen vision feature maps for MOCHEG images."""
-
 import argparse
 import json
 from pathlib import Path
@@ -16,7 +14,75 @@ from data.dataset import (
     feature_cache_path,
 )
 from data.dataset_mocheg import MochegDataset
-from models.vision_graph import VisionGraph
+
+
+def _pair(value):
+    if isinstance(value, int):
+        return value, value
+    return value[0], value[1]
+
+
+def infer_feature_grid(image_size, encoder_config):
+    if all(
+        hasattr(encoder_config, name) for name in ("patch_sizes", "strides", "padding")
+    ):
+        patch_sizes = encoder_config.patch_sizes
+        strides = encoder_config.strides
+        paddings = encoder_config.padding
+
+        height = width = image_size
+        for patch_size, stride, padding in zip(
+            patch_sizes,
+            strides,
+            paddings,
+        ):
+            patch_height, patch_width = _pair(patch_size)
+            stride_height, stride_width = _pair(stride)
+            padding_height, padding_width = _pair(padding)
+            height = (height + 2 * padding_height - patch_height) // stride_height + 1
+            width = (width + 2 * padding_width - patch_width) // stride_width + 1
+    elif hasattr(encoder_config, "patch_size"):
+        patch_height, patch_width = _pair(encoder_config.patch_size)
+        height = image_size // patch_height
+        width = image_size // patch_width
+        if getattr(encoder_config, "model_type", None) in {
+            "convnext",
+            "convnextv2",
+        }:
+            num_stages = getattr(
+                encoder_config,
+                "num_stages",
+                len(encoder_config.hidden_sizes),
+            )
+            height //= 2 ** (num_stages - 1)
+            width //= 2 ** (num_stages - 1)
+    else:
+        raise ValueError("The selected vision model has no supported patch layout")
+
+    return height, width
+
+
+def infer_feature_width(encoder_config):
+    hidden_sizes = getattr(encoder_config, "hidden_sizes", None)
+    if hidden_sizes:
+        return hidden_sizes[-1]
+    hidden_size = getattr(encoder_config, "hidden_size", None)
+    return hidden_size
+
+
+def to_feature_map(last_hidden_state, feature_grid):
+    if last_hidden_state.ndim == 4:
+        return last_hidden_state
+
+    height, width = feature_grid
+    patch_count = height * width
+    patch_tokens = last_hidden_state[:, -patch_count:]
+    return patch_tokens.transpose(1, 2).reshape(
+        last_hidden_state.size(0),
+        last_hidden_state.size(2),
+        height,
+        width,
+    )
 
 
 def _write_metadata(cache_dir, metadata):
@@ -53,16 +119,11 @@ def extract_features(
         if not images:
             continue
 
-        pixel_values = processor(images=images, return_tensors="pt")[
-            "pixel_values"
-        ].to(device)
+        pixel_values = processor(images=images, return_tensors="pt")["pixel_values"].to(
+            device
+        )
         output = encoder(pixel_values=pixel_values).last_hidden_state
-        output = VisionGraph.to_feature_map(output, feature_shape[-2:])
-        if tuple(output.shape[1:]) != feature_shape:
-            raise ValueError(
-                f"Vision model returned feature shape {tuple(output.shape[1:])}; "
-                f"expected {feature_shape}"
-            )
+        output = to_feature_map(output, feature_shape[-2:])
 
         feature_maps.extend(output.cpu().to(torch.float16).unbind(0))
         valid_indices.extend(batch_indices)
@@ -84,8 +145,6 @@ def precompute_split(
     feature_shape,
     batch_size,
 ):
-    """Extract and save one feature tensor per claim in a dataset split."""
-
     for sample in tqdm(loader.load_split(split), desc=f"Caching {split}", unit="claim"):
         features, valid_indices = extract_features(
             sample["images"],
@@ -125,19 +184,12 @@ def parse_args():
         help="Split to process; repeat for multiple splits (default: all)",
     )
     parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--device", default="auto")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    if args.batch_size < 1:
-        raise ValueError("batch-size must be at least 1")
-
-    if args.device == "auto":
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    else:
-        device = torch.device(args.device)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     config = Config(
         data_root=args.data_root,
@@ -146,9 +198,9 @@ def main():
     cache_dir = Path(config.data_root) / "vision_feature" / args.vision_model
     processor = AutoImageProcessor.from_pretrained(config.vision_model)
     encoder = AutoModel.from_pretrained(config.vision_model).to(device).eval()
-    feature_grid = VisionGraph._infer_feature_grid(config.image_size, encoder.config)
+    feature_grid = infer_feature_grid(config.image_size, encoder.config)
     feature_shape = (
-        VisionGraph._infer_feature_width(encoder.config),
+        infer_feature_width(encoder.config),
         *feature_grid,
     )
 

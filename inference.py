@@ -9,15 +9,14 @@ from matplotlib.figure import Figure
 import networkx as nx
 import torch
 import torch.nn.functional as F
-from PIL import Image
 from transformers import AutoTokenizer
 
 from config import Config
 from data.dataset import (
     ID_TO_LABEL,
+    MochegDataset,
     MochegCollator,
-    _label_to_id,
-    build_image_transform,
+    load_feature_cache_metadata,
 )
 from data.dataset_mocheg import MochegDataset as MochegLoader
 from evaluate import load_checkpoint, read_checkpoint
@@ -25,7 +24,11 @@ from models.model import DualGraphFC
 from utils import move_batch_to_device, save_json
 
 
-def load_inference_bundle(checkpoint_path, requested_device="auto"):
+def load_inference_bundle(
+    checkpoint_path,
+    requested_device="auto",
+    feature_cache_dir=None,
+):
     """Restore the saved configuration, tokenizer, and model."""
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -34,48 +37,24 @@ def load_inference_bundle(checkpoint_path, requested_device="auto"):
         config = Config.from_dict(checkpoint["config"])
     else:
         config = Config()
+    if feature_cache_dir is not None:
+        config.vision_feature_cache_dir = feature_cache_dir
+    if config.vision_feature_cache_dir is None:
+        raise ValueError(
+            "A vision feature cache is required. Pass --feature-cache or set "
+            "vision_feature_cache_dir in the saved configuration."
+        )
+    feature_shape = load_feature_cache_metadata(
+        config.vision_feature_cache_dir,
+        config.vision_model,
+        config.image_size,
+    )
 
     tokenizer = AutoTokenizer.from_pretrained(config.long_text_model)
-    model = DualGraphFC(config).to(device)
+    model = DualGraphFC(config, vision_feature_shape=feature_shape).to(device)
     load_checkpoint(model, checkpoint, device)
     model.eval()
     return model, tokenizer, config, device
-
-
-def _prepare_images(image_paths, config):
-    transform = build_image_transform(
-        config.image_size,
-        config.vision_model,
-    )
-    tensors = []
-    display_tensors = []
-    loaded_paths = []
-    skipped_paths = []
-    for raw_path in image_paths:
-        path = Path(raw_path).expanduser()
-        try:
-            with Image.open(path) as image:
-                image_tensor = transform(image.convert("RGB"))
-            if not torch.is_tensor(image_tensor):
-                raise TypeError("image transform must return a tensor")
-            tensors.append(image_tensor)
-            display_tensors.append(_to_display_image(image_tensor, transform))
-            loaded_paths.append(str(path.resolve()))
-        except (FileNotFoundError, OSError):
-            skipped_paths.append(str(path))
-    return tensors, display_tensors, loaded_paths, skipped_paths
-
-
-def _to_display_image(image_tensor, transform):
-    """Undo backbone normalization while preserving its resize/crop."""
-
-    display = image_tensor.detach().float().cpu()
-    processor = getattr(transform, "processor", None)
-    if processor is not None and getattr(processor, "do_normalize", False):
-        mean = torch.as_tensor(processor.image_mean).view(-1, 1, 1)
-        std = torch.as_tensor(processor.image_std).view(-1, 1, 1)
-        display = display * std + mean
-    return display.clamp(0.0, 1.0)
 
 
 def _valid_values(values, mask):
@@ -375,6 +354,7 @@ def predict(
     config,
     claim,
     evidence=None,
+    image_features=None,
     image_paths=None,
     device=None,
     visualization_dir=None,
@@ -383,24 +363,38 @@ def predict(
 
     model.eval()
     evidence = list(evidence or [])
-    image_tensors, display_images, loaded_paths, skipped_paths = _prepare_images(
-        image_paths or [], config
-    )
+    feature_shape = model.vision_graph.feature_shape
+    if image_features is None:
+        image_features = torch.empty((0, *feature_shape), dtype=torch.float32)
+    if (
+        not torch.is_tensor(image_features)
+        or not torch.is_floating_point(image_features)
+        or image_features.ndim != 4
+        or tuple(image_features.shape[1:]) != feature_shape
+    ):
+        raise ValueError(
+            "image_features must be a floating-point tensor with shape "
+            f"[images, {', '.join(map(str, feature_shape))}]"
+        )
+    loaded_paths = [str(Path(path).expanduser()) for path in image_paths or []]
+    if loaded_paths and len(loaded_paths) != image_features.size(0):
+        raise ValueError("image_paths must match the number of cached image features")
     sample = {
         "claim": claim,
         "evidence": evidence,
-        "images": image_tensors,
+        "image_features": image_features,
         # The collator requires a label, but inference does not use it.
         "label": 0,
         "metadata": {
             "image_paths": loaded_paths,
-            "skipped_image_paths": skipped_paths,
+            "skipped_image_paths": [],
         },
     }
     collator = MochegCollator(
         tokenizer,
         max_text_length=config.max_text_length,
         image_size=config.image_size,
+        feature_shape=feature_shape,
     )
     batch = collator([sample])
     if device is None:
@@ -449,7 +443,7 @@ def predict(
         },
         "patch_grid": None,
         "loaded_image_paths": loaded_paths,
-        "skipped_image_paths": skipped_paths,
+        "skipped_image_paths": [],
     }
     vision_details = outputs.get("vision_graph")
     if vision_details is not None:
@@ -460,7 +454,6 @@ def predict(
             [claim, *evidence],
             loaded_paths,
             visualization_dir,
-            display_images=display_images,
         )
     return result
 
@@ -477,22 +470,40 @@ def predict_dataset_sample(
 ):
     """Run inference on one indexed MOCHEG sample."""
 
-    sample = load_dataset_sample(data_root, split, sample_index)
+    if sample_index < 0:
+        raise ValueError("sample_index must be non-negative")
+    dataset = MochegDataset(
+        data_root,
+        split,
+        image_size=config.image_size,
+        vision_model=config.vision_model,
+        feature_cache_dir=config.vision_feature_cache_dir,
+        retrieved_text_dir=config.retrieved_text_dir,
+        limit=sample_index + 1,
+    )
+    if sample_index >= len(dataset):
+        raise IndexError(
+            f"sample_index {sample_index} is outside the {split!r} split "
+            f"with {len(dataset)} samples"
+        )
+    sample = dataset[sample_index]
+    metadata = sample["metadata"]
     result = predict(
         model,
         tokenizer,
         config,
         sample["claim"],
-        evidence=sample["text_evidence"],
-        image_paths=sample["images"],
+        evidence=sample["evidence"],
+        image_features=sample["image_features"],
+        image_paths=metadata["image_paths"],
         device=device,
         visualization_dir=visualization_dir,
     )
-    ground_truth_id = _label_to_id(sample["cleaned_truthfulness"])
+    ground_truth_id = sample["label"]
     result["dataset_sample"] = {
         "split": split,
         "sample_index": sample_index,
-        "claim_id": sample["claim_id"],
+        "claim_id": metadata["claim_id"],
         "ground_truth_label": ID_TO_LABEL[ground_truth_id],
         "ground_truth_label_id": ground_truth_id,
         "correct": result["label_id"] == ground_truth_id,
@@ -514,7 +525,20 @@ def parse_args():
         help="Zero-based sample index from a MOCHEG split",
     )
     parser.add_argument("--evidence", action="append", default=[])
-    parser.add_argument("--image", action="append", default=[])
+    parser.add_argument(
+        "--feature-file",
+        help="Cached .pt payload containing a 'features' tensor",
+    )
+    parser.add_argument(
+        "--image",
+        action="append",
+        default=[],
+        help="Optional image path label for each row in --feature-file",
+    )
+    parser.add_argument(
+        "--feature-cache",
+        help="Precomputed vision-feature directory",
+    )
     parser.add_argument("--data-root", help="Directory containing MOCHEG splits")
     parser.add_argument(
         "--split",
@@ -533,12 +557,17 @@ def parse_args():
 
 def main():
     args = parse_args()
-    if args.sample_index is not None and (args.evidence or args.image):
+    if args.sample_index is not None and (
+        args.evidence or args.image or args.feature_file
+    ):
         raise ValueError(
-            "--evidence and --image cannot be combined with --sample-index"
+            "--evidence, --image, and --feature-file cannot be combined with "
+            "--sample-index"
         )
     model, tokenizer, config, device = load_inference_bundle(
-        args.checkpoint, args.device
+        args.checkpoint,
+        args.device,
+        feature_cache_dir=args.feature_cache,
     )
     if args.sample_index is not None:
         result = predict_dataset_sample(
@@ -552,12 +581,25 @@ def main():
             visualization_dir=args.visualize_dir,
         )
     else:
+        image_features = None
+        if args.feature_file is not None:
+            payload = torch.load(
+                Path(args.feature_file).expanduser(),
+                map_location="cpu",
+                weights_only=True,
+            )
+            if not isinstance(payload, dict) or "features" not in payload:
+                raise ValueError(
+                    "--feature-file must contain a saved 'features' tensor"
+                )
+            image_features = payload["features"]
         result = predict(
             model,
             tokenizer,
             config,
             args.claim,
             evidence=args.evidence,
+            image_features=image_features,
             image_paths=args.image,
             device=device,
             visualization_dir=args.visualize_dir,

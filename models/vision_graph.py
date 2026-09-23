@@ -4,7 +4,6 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torch_geometric.nn import SAGEConv
-from transformers import AutoModel
 
 
 class VisionGraphBlock(nn.Module):
@@ -27,26 +26,20 @@ class VisionGraphBlock(nn.Module):
 
 
 class VisionGraph(nn.Module):
-    """Encode images with a frozen vision backbone and reason spatially."""
+    """Reason spatially over precomputed vision feature maps."""
 
-    def __init__(self, config, encoder=None):
+    def __init__(self, config, feature_shape=None):
         super().__init__()
         self.hidden_dim = config.hidden_dim
         num_layers = config.vision_gnn_layers
         dropout = getattr(config, "dropout", 0.1)
 
-        self.encoder = (
-            encoder
-            if encoder is not None
-            else AutoModel.from_pretrained(config.vision_model)
-        )
-        self.image_size = config.image_size
-        self.feature_grid = self._infer_feature_grid(
-            self.image_size,
-            self.encoder.config,
-        )
+        self.feature_shape = tuple(feature_shape)
+        feature_channels, feature_height, feature_width = self.feature_shape
+        self.feature_grid = (feature_height, feature_width)
+
         self.projection = nn.Linear(
-            self._infer_feature_width(self.encoder.config),
+            feature_channels,
             self.hidden_dim,
         )
         self.register_buffer(
@@ -54,130 +47,14 @@ class VisionGraph(nn.Module):
             self._build_grid_edges(*self.feature_grid),
             persistent=False,
         )
-        self.encoder.to(dtype=self.projection.weight.dtype)
-        self.encoder.requires_grad_(False)
-        self.encoder.eval()
-
-        if num_layers < 1:
-            raise ValueError("vision_gnn_layers must be at least 1")
         self.blocks = nn.ModuleList(
             VisionGraphBlock(self.hidden_dim, dropout) for _ in range(num_layers)
         )
         self.no_image_token = nn.Parameter(torch.empty(1, 1, self.hidden_dim))
         nn.init.normal_(self.no_image_token, std=0.02)
 
-    def train(self, mode=True):
-        super().train(mode)
-        self.encoder.eval()
-        return self
-
-    @staticmethod
-    def _infer_feature_grid(image_size, encoder_config):
-        """Return the final spatial grid for a supported vision backbone."""
-
-        if image_size < 1:
-            raise ValueError("image_size must be positive")
-
-        if all(
-            hasattr(encoder_config, name)
-            for name in ("patch_sizes", "strides", "padding")
-        ):
-            patch_sizes = encoder_config.patch_sizes
-            strides = encoder_config.strides
-            paddings = encoder_config.padding
-            if not (len(patch_sizes) == len(strides) == len(paddings)):
-                raise ValueError("Vision stage configuration lengths must match")
-
-            height = width = image_size
-            for patch_size, stride, padding in zip(
-                patch_sizes,
-                strides,
-                paddings,
-            ):
-                patch_height, patch_width = VisionGraph._pair(patch_size)
-                stride_height, stride_width = VisionGraph._pair(stride)
-                padding_height, padding_width = VisionGraph._pair(padding)
-                if min(
-                    patch_height,
-                    patch_width,
-                    stride_height,
-                    stride_width,
-                ) < 1:
-                    raise ValueError("Vision patch sizes and strides must be positive")
-                height = (
-                    height + 2 * padding_height - patch_height
-                ) // stride_height + 1
-                width = (
-                    width + 2 * padding_width - patch_width
-                ) // stride_width + 1
-        elif hasattr(encoder_config, "patch_size"):
-            patch_height, patch_width = VisionGraph._pair(encoder_config.patch_size)
-            height = image_size // patch_height
-            width = image_size // patch_width
-            if getattr(encoder_config, "model_type", None) in {
-                "convnext",
-                "convnextv2",
-            }:
-                num_stages = getattr(
-                    encoder_config,
-                    "num_stages",
-                    len(encoder_config.hidden_sizes),
-                )
-                height //= 2 ** (num_stages - 1)
-                width //= 2 ** (num_stages - 1)
-        else:
-            raise ValueError("The selected vision model has no supported patch layout")
-
-        if height < 1 or width < 1:
-            raise ValueError("image_size is too small for the vision backbone")
-        return height, width
-
-    @staticmethod
-    def _infer_feature_width(encoder_config):
-        hidden_sizes = getattr(encoder_config, "hidden_sizes", None)
-        if hidden_sizes:
-            return hidden_sizes[-1]
-        hidden_size = getattr(encoder_config, "hidden_size", None)
-        if hidden_size is None:
-            raise ValueError("The selected vision model has no hidden feature width")
-        return hidden_size
-
-    @staticmethod
-    def to_feature_map(last_hidden_state, feature_grid):
-        """Convert CNN maps or ViT patch tokens to ``[B, C, H, W]``."""
-
-        if last_hidden_state.ndim == 4:
-            return last_hidden_state
-        if last_hidden_state.ndim != 3:
-            raise ValueError("Vision features must have three or four dimensions")
-
-        height, width = feature_grid
-        patch_count = height * width
-        if last_hidden_state.size(1) < patch_count:
-            raise ValueError("Vision model returned fewer tokens than spatial patches")
-        patch_tokens = last_hidden_state[:, -patch_count:]
-        return patch_tokens.transpose(1, 2).reshape(
-            last_hidden_state.size(0),
-            last_hidden_state.size(2),
-            height,
-            width,
-        )
-
-    @staticmethod
-    def _pair(value):
-        if isinstance(value, int):
-            return value, value
-        if len(value) != 2:
-            raise ValueError("Vision spatial parameters must be scalars or pairs")
-        return value[0], value[1]
-
     @staticmethod
     def _build_grid_edges(height, width):
-        """Build a fixed bidirectional 8-neighbour spatial grid."""
-
-        if height < 1 or width < 1:
-            raise ValueError("grid dimensions must be positive")
-
         sources = []
         targets = []
         for row in range(height):
@@ -198,84 +75,27 @@ class VisionGraph(nn.Module):
         return torch.tensor((sources, targets), dtype=torch.long)
 
     def build_edges(self, features):
-        """Return the fixed grid graph for one image's spatial features.
-
-        Args:
-            features: Spatial features with shape ``[num_nodes, hidden_dim]``.
-        Returns:
-            A long tensor with shape ``[2, num_edges]``. For a one-node
-            image, it is an empty edge set; GraphSAGE still applies its root
-            transformation.
-        """
-
-        if features.ndim != 2:
-            raise ValueError("features must have shape [visual_nodes, hidden_dim]")
-        expected_nodes = self.feature_grid[0] * self.feature_grid[1]
-        if features.size(0) != expected_nodes:
-            raise ValueError(
-                f"visual node count must match the feature grid ({expected_nodes})"
-            )
         return self.grid_edge_index.to(features.device)
 
     def forward(
         self,
-        images=None,
+        feature_maps,
         image_mask=None,
         return_mask=False,
         return_details=False,
-        feature_maps=None,
     ):
-        """Return padded visual nodes for a batch of image sets.
-
-        ``images`` normally has shape ``[B, M, 3, H, W]``; ``[B, 3, H, W]``
-        is accepted as a one-image shorthand. Alternatively, ``feature_maps``
-        accepts cached backbone outputs with shape ``[B, M, C, Hf, Wf]``.
-        Each fixed spatial grid is processed separately through the
-        shared graph blocks. A sample with no valid image receives one valid
-        learned no-image token.
-
-        Return conventions are deliberately simple: nodes only by default;
-        ``(nodes, visual_node_mask)`` with ``return_mask``; ``(nodes, details)``
-        with ``return_details``; or all three when both flags are true.
-        """
-
-        if (images is None) == (feature_maps is None):
-            raise ValueError("Pass exactly one of images or feature_maps")
-
-        values = feature_maps if feature_maps is not None else images
+        values = feature_maps
         if values.ndim == 4:
             values = values.unsqueeze(1)
             if image_mask is not None and image_mask.ndim == 1:
                 image_mask = image_mask.unsqueeze(1)
-        if values.ndim != 5:
-            raise ValueError("Vision inputs must have shape [batch, images, channels, H, W]")
-        if not torch.is_floating_point(values):
-            raise TypeError("Vision inputs must be floating-point tensors")
 
         batch_size, max_images, channels, height, width = values.shape
-        if feature_maps is None:
-            if channels != 3:
-                raise ValueError("images must have three RGB channels")
-            if (height, width) != (self.image_size, self.image_size):
-                raise ValueError(
-                    "images must match the vision-model input size "
-                    f"{self.image_size}x{self.image_size}"
-                )
-        elif (channels, height, width) != (
-            self.projection.in_features,
-            *self.feature_grid,
-        ):
-            raise ValueError(
-                "feature_maps must match the vision model's final feature shape "
-                f"{(self.projection.in_features, *self.feature_grid)}"
-            )
 
         if image_mask is None:
             image_mask = torch.ones(
                 (batch_size, max_images), dtype=torch.bool, device=values.device
             )
-        elif image_mask.shape != (batch_size, max_images):
-            raise ValueError("image_mask must have shape [batch, images]")
         else:
             image_mask = image_mask.to(device=values.device, dtype=torch.bool)
 
@@ -309,23 +129,7 @@ class VisionGraph(nn.Module):
         ]
 
         if valid_indices.numel():
-            if feature_maps is None:
-                with torch.no_grad():
-                    encoded = self.encoder(pixel_values=flat_values[valid_indices])
-                valid_feature_maps = self.to_feature_map(
-                    encoded.last_hidden_state,
-                    self.feature_grid,
-                )
-            else:
-                valid_feature_maps = flat_values[valid_indices]
-            if valid_feature_maps.ndim != 4:
-                raise ValueError(
-                    "Vision backbone must return [images, channels, height, width]"
-                )
-            if valid_feature_maps.size(1) != self.projection.in_features:
-                raise ValueError("Vision backbone returned an unexpected channel width")
-            if tuple(valid_feature_maps.shape[-2:]) != self.feature_grid:
-                raise ValueError("Vision backbone returned an unexpected spatial grid")
+            valid_feature_maps = flat_values[valid_indices]
             valid_feature_maps = valid_feature_maps.to(dtype=self.projection.weight.dtype)
             valid_features = valid_feature_maps.flatten(2).transpose(1, 2).contiguous()
             valid_features = self.projection(valid_features)

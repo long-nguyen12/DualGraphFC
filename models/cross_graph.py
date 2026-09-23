@@ -39,11 +39,6 @@ class CrossGraphReasoner(nn.Module):
         visual_mask=None,
         return_attention=False,
     ):
-        if text_nodes.ndim != 3 or visual_nodes.ndim != 3:
-            raise ValueError("cross-graph inputs must have shape [batch, nodes, hidden_dim]")
-        if text_nodes.size(0) != visual_nodes.size(0):
-            raise ValueError("text and visual graphs must have the same batch size")
-
         if text_mask is None:
             text_mask = torch.ones(
                 text_nodes.shape[:2], dtype=torch.bool, device=text_nodes.device
@@ -52,16 +47,8 @@ class CrossGraphReasoner(nn.Module):
             visual_mask = torch.ones(
                 visual_nodes.shape[:2], dtype=torch.bool, device=visual_nodes.device
             )
-        if text_mask.shape != text_nodes.shape[:2]:
-            raise ValueError("text_mask must have shape [batch, text_nodes]")
-        if visual_mask.shape != visual_nodes.shape[:2]:
-            raise ValueError("visual_mask must have shape [batch, visual_nodes]")
         text_mask = text_mask.to(device=text_nodes.device, dtype=torch.bool)
         visual_mask = visual_mask.to(device=visual_nodes.device, dtype=torch.bool)
-        if not text_mask.any(dim=1).all():
-            raise ValueError("every sample must contain at least one text node")
-        if not visual_mask.any(dim=1).all():
-            raise ValueError("every sample must contain a visual or no-image node")
 
         matched_visual, text_to_vision_attention = self.text_to_vision(
             query=text_nodes,

@@ -1,1 +1,0 @@
-"""DualGraphFC model components."""

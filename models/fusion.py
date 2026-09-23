@@ -10,13 +10,8 @@ class AttentionPool(nn.Module):
         self.score = nn.Linear(hidden_dim, 1)
 
     def forward(self, nodes, mask=None, return_attention=False):
-        if nodes.ndim != 3:
-            raise ValueError("nodes must have shape [batch, nodes, hidden_dim]")
-
         scores = self.score(nodes).squeeze(-1)
         if mask is not None:
-            if mask.shape != scores.shape:
-                raise ValueError("pooling mask must have shape [batch, nodes]")
             mask = mask.bool()
             scores = scores.masked_fill(~mask, torch.finfo(scores.dtype).min)
 
