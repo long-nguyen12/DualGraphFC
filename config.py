@@ -27,12 +27,13 @@ class Config:
     prediction_dir = "outputs/predictions"
 
     text_model = "microsoft/deberta-v3-base"
-    long_text_model = "allenai/longformer-base-4096"
+    # long_text_model = "allenai/longformer-base-4096"
+    long_text_model = "microsoft/deberta-v3-base"
 
     vision_model = VISION_MODELS["dinov2"]
     vision_feature_cache_dir = None
     retrieved_text_dir = None
-    max_text_length = 2048
+    max_text_length = 512
 
     image_size = 224
     hidden_dim = 512
