@@ -233,7 +233,13 @@ def main():
             "A vision feature cache is required. Pass --feature-cache or set "
             "vision_feature_cache_dir in config.py."
         )
+    if args.retrieved_text_dir is None:
+        raise ValueError(
+            "A retrieved-text directory is required. Pass --retrieved-text-dir or set "
+            "retrieved_text_dir in config.py."
+        )
     config.vision_feature_cache_dir = args.feature_cache
+    config.retrieved_text_dir = args.retrieved_text_dir
 
     set_seed(config.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

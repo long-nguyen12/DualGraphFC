@@ -15,25 +15,12 @@ class FocalLoss(nn.Module):
 
     def __init__(self, gamma=2.0, weight=None):
         super().__init__()
-        if gamma < 0:
-            raise ValueError("focal gamma must be non-negative")
         self.gamma = gamma
         if weight is not None:
             weight = torch.as_tensor(weight, dtype=torch.float32)
-            if weight.ndim != 1 or (weight <= 0).any():
-                raise ValueError(
-                    "class weights must be a positive one-dimensional tensor"
-                )
         self.register_buffer("weight", weight)
 
     def forward(self, logits, targets):
-        if logits.ndim != 2:
-            raise ValueError("logits must have shape [batch, classes]")
-        if targets.shape != (logits.size(0),):
-            raise ValueError("targets must have shape [batch]")
-        if self.weight is not None and self.weight.numel() != logits.size(1):
-            raise ValueError("class weights must match the number of classes")
-
         log_probabilities = F.log_softmax(logits, dim=-1)
         target_log_probabilities = log_probabilities.gather(
             1, targets.unsqueeze(1)
@@ -44,17 +31,13 @@ class FocalLoss(nn.Module):
         if self.weight is None:
             return losses.mean()
         sample_weights = self.weight[targets]
-        return (losses * sample_weights).sum() / sample_weights.sum().clamp_min(
-            1e-12
-        )
+        return (losses * sample_weights).sum() / sample_weights.sum().clamp_min(1e-12)
 
 
 def build_classification_loss(config, device):
-    """Build the configured focal classification objective."""
-
     return FocalLoss(
         gamma=getattr(config, "focal_gamma", 2.0),
-        weight=getattr(config, "class_weights", None),
+        # weight=getattr(config, "class_weights", None),
     ).to(device)
 
 
@@ -77,7 +60,9 @@ def contrastive_alignment_loss(text, image, temperature=0.07, valid_mask=None):
     """One-way in-batch text-to-image contrastive loss."""
 
     if text.ndim != 2 or image.shape != text.shape:
-        raise ValueError("text and image embeddings must share shape [batch, hidden_dim]")
+        raise ValueError(
+            "text and image embeddings must share shape [batch, hidden_dim]"
+        )
     if temperature <= 0:
         raise ValueError("temperature must be positive")
     if valid_mask is not None:

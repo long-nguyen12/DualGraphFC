@@ -61,7 +61,7 @@ class Config:
 
     focal_gamma = 2.0
     # Label order: supported, refuted, not enough information.
-    class_weights = (1.017, 0.856, 1.178)
+    class_weights = None
 
     alignment_weight = 0.1
     temperature = 0.07
