@@ -1,6 +1,5 @@
 """Small shared training and serialization helpers."""
 
-from contextlib import nullcontext
 import json
 import random
 from pathlib import Path
@@ -40,12 +39,6 @@ def build_classification_loss(config, device):
         gamma=getattr(config, "focal_gamma", 2.0),
         weight=getattr(config, "class_weights", None),
     ).to(device)
-
-
-def bf16_autocast(device):
-    if torch.device(device).type == "cuda" and torch.cuda.is_bf16_supported():
-        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
-    return nullcontext()
 
 
 def set_seed(seed):

@@ -13,12 +13,7 @@ from tqdm.auto import tqdm
 from transformers import AutoTokenizer
 
 from data.dataset import ID_TO_LABEL, MochegCollator, MochegDataset
-from utils import (
-    bf16_autocast,
-    build_classification_loss,
-    move_batch_to_device,
-    save_json,
-)
+from utils import build_classification_loss, move_batch_to_device, save_json
 
 
 def build_dataloader(
@@ -120,14 +115,13 @@ def evaluate_model(model, dataloader, device, num_classes=3, criterion=None):
         if batch_size == 0:
             raise ValueError("Evaluation batch contains no samples")
 
-        with bf16_autocast(device):
-            logits = model(batch)
-            targets = batch["labels"]
-            loss = (
-                F.cross_entropy(logits, targets)
-                if criterion is None
-                else criterion(logits, targets)
-            )
+        logits = model(batch)
+        targets = batch["labels"]
+        loss = (
+            F.cross_entropy(logits, targets)
+            if criterion is None
+            else criterion(logits, targets)
+        )
 
         total_loss += loss.item() * batch_size
         total_examples += batch_size

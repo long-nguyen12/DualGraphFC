@@ -42,18 +42,16 @@ class TextEncoder(nn.Module):
 
         valid = node_mask.reshape(-1).bool()
 
-        feature_shape = (batch_size * num_nodes, self.projection.out_features)
+        features = self.projection.weight.new_zeros(
+            (batch_size * num_nodes, self.projection.out_features)
+        )
         if valid.any():
             with torch.no_grad():
                 outputs = self.encoder(
                     input_ids=flat_ids[valid],
                     attention_mask=flat_attention[valid],
                 )
-            valid_features = self.projection(outputs.last_hidden_state[:, 0])
-            features = valid_features.new_zeros(feature_shape)
-            features[valid] = valid_features
-        else:
-            features = self.projection.weight.new_zeros(feature_shape)
+            features[valid] = self.projection(outputs.last_hidden_state[:, 0])
 
         return features.reshape(batch_size, num_nodes, -1)
 
@@ -127,14 +125,12 @@ class LongTextEncoder(nn.Module):
             node_mask = attention_mask.any(dim=-1)
         valid = node_mask.reshape(-1).bool()
 
-        feature_shape = (batch_size * num_nodes, self.projection.out_features)
+        features = self.projection.weight.new_zeros(
+            (batch_size * num_nodes, self.projection.out_features)
+        )
         if valid.any():
-            valid_features = self._encode(
+            features[valid] = self._encode(
                 flat_ids[valid],
                 flat_attention[valid],
             )
-            features = valid_features.new_zeros(feature_shape)
-            features[valid] = valid_features
-        else:
-            features = self.projection.weight.new_zeros(feature_shape)
         return features.reshape(batch_size, num_nodes, -1)
