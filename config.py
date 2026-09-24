@@ -32,7 +32,7 @@ class Config:
     vision_model = VISION_MODELS["dinov2"]
     vision_feature_cache_dir = None
     retrieved_text_dir = None
-    max_text_length = 4096
+    max_text_length = 2048
 
     image_size = 224
     hidden_dim = 512

@@ -7,6 +7,7 @@ from tqdm.auto import tqdm
 from config import VISION_MODELS, resolve_vision_model
 from evaluate import build_dataloader, evaluate_model, load_checkpoint
 from utils import (
+    bf16_autocast,
     build_classification_loss,
     contrastive_alignment_loss,
     move_batch_to_device,
@@ -78,21 +79,22 @@ def train_one_epoch(
 
         optimizer.zero_grad(set_to_none=True)
 
-        if use_alignment:
-            outputs = model(batch, return_details=True)
-            logits = outputs["logits"]
-            alignment_loss = contrastive_alignment_loss(
-                outputs["text_embedding"],
-                outputs["visual_embedding"],
-                temperature=config.temperature,
-                valid_mask=batch["has_image"],
-            )
-        else:
-            logits = model(batch)
-            alignment_loss = logits.new_zeros(())
+        with bf16_autocast(device):
+            if use_alignment:
+                outputs = model(batch, return_details=True)
+                logits = outputs["logits"]
+                alignment_loss = contrastive_alignment_loss(
+                    outputs["text_embedding"],
+                    outputs["visual_embedding"],
+                    temperature=config.temperature,
+                    valid_mask=batch["has_image"],
+                )
+            else:
+                logits = model(batch)
+                alignment_loss = logits.new_zeros(())
 
-        classification_loss = criterion(logits, batch["labels"])
-        loss = classification_loss + config.alignment_weight * alignment_loss
+            classification_loss = criterion(logits, batch["labels"])
+            loss = classification_loss + config.alignment_weight * alignment_loss
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
         optimizer.step()
