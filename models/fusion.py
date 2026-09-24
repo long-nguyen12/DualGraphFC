@@ -35,6 +35,7 @@ class MultimodalFusion(nn.Module):
         self.consistency_pool = AttentionPool(hidden_dim)
         self.text_gate = nn.Linear(hidden_dim, hidden_dim)
         self.visual_gate = nn.Linear(hidden_dim, hidden_dim)
+        self.dropout = nn.Dropout(config.dropout)
 
     def forward(
         self,
@@ -52,12 +53,10 @@ class MultimodalFusion(nn.Module):
         visual_embedding, visual_attention = self.visual_pool(
             visual_nodes, visual_mask, return_attention=True
         )
-        text_consistency_embedding, text_consistency_attention = (
-            self.consistency_pool(
-                text_consistency_nodes,
-                text_mask,
-                return_attention=True,
-            )
+        text_consistency_embedding, text_consistency_attention = self.consistency_pool(
+            text_consistency_nodes,
+            text_mask,
+            return_attention=True,
         )
         visual_consistency_embedding, visual_consistency_attention = (
             self.consistency_pool(
@@ -72,13 +71,15 @@ class MultimodalFusion(nn.Module):
 
         text_gate = torch.sigmoid(self.text_gate(text_embedding))
         visual_gate = torch.sigmoid(self.visual_gate(visual_embedding))
-        fused = torch.cat(
-            (
-                text_gate * text_embedding,
-                visual_gate * visual_embedding,
-                consistency_embedding,
-            ),
-            dim=-1,
+        fused = self.dropout(
+            torch.cat(
+                (
+                    text_gate * text_embedding,
+                    visual_gate * visual_embedding,
+                    consistency_embedding,
+                ),
+                dim=-1,
+            )
         )
 
         if not return_details:

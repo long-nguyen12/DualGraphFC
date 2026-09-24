@@ -1,6 +1,5 @@
 """DualGraphFC configuration."""
 
-
 VISION_MODELS = {
     "poolformer": "sail/poolformer_s12",
     "dinov2": "facebook/dinov2-base",
@@ -14,7 +13,9 @@ def resolve_vision_model(name):
         return VISION_MODELS[name]
     except KeyError as exc:
         choices = ", ".join(VISION_MODELS)
-        raise ValueError(f"Unknown vision model {name!r}; choose one of: {choices}") from exc
+        raise ValueError(
+            f"Unknown vision model {name!r}; choose one of: {choices}"
+        ) from exc
 
 
 class Config:
@@ -27,7 +28,7 @@ class Config:
 
     text_model = "microsoft/deberta-v3-base"
     long_text_model = "allenai/longformer-base-4096"
-    
+
     vision_model = VISION_MODELS["dinov2"]
     vision_feature_cache_dir = None
     retrieved_text_dir = None
@@ -35,33 +36,34 @@ class Config:
 
     image_size = 224
     hidden_dim = 512
-    text_finetune_layers = 1
+    text_finetune_layers = 0
 
     text_gnn_layers = 2
     text_gnn_heads = 4
     text_graph_k = 3
 
-    vision_gnn_layers = 4
+    vision_gnn_layers = 2
 
     cross_heads = 4
 
     batch_size = 8
     epochs = 30
+    early_stopping_patience = 5
     num_workers = 0
     seed = 42
 
-    transformer_lr = 1e-5
+    transformer_lr = 2e-5
     graph_lr = 5e-5
     weight_decay = 0.01
     max_grad_norm = 1.0
     # Retained so configurations stored by older checkpoints remain loadable.
     scheduler_factor = 0.5
     scheduler_patience = 2
-    min_lr = 1e-6
+    min_lr = 1e-5
 
     focal_gamma = 2.0
     # Label order: supported, refuted, not enough information.
-    class_weights = None
+    class_weights = [1, 1, 2]
 
     alignment_weight = 0.1
     temperature = 0.07

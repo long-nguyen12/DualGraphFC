@@ -151,8 +151,11 @@ def fit(
         criterion = build_classification_loss(config, device)
     if scheduler is None:
         scheduler = build_scheduler(optimizer, config)
+    early_stopping_patience = getattr(config, "early_stopping_patience", None)
+    
     history = []
     best_macro_f1 = float("-inf")
+    epochs_without_improvement = 0
 
     for epoch in range(1, config.epochs + 1):
         train_metrics = train_one_epoch(
@@ -185,6 +188,9 @@ def fit(
         improved = macro_f1 > best_macro_f1
         if improved:
             best_macro_f1 = macro_f1
+            epochs_without_improvement = 0
+        else:
+            epochs_without_improvement += 1
         if scheduler is not None:
             scheduler.step()
         if improved:
@@ -205,6 +211,15 @@ def fit(
             f"val_classification_loss={validation_metrics['classification_loss']:.4f} "
             f"val_macro_f1={macro_f1:.4f}"
         )
+        if (
+            early_stopping_patience is not None
+            and epochs_without_improvement >= early_stopping_patience
+        ):
+            print(
+                "Early stopping: validation macro-F1 did not improve for "
+                f"{early_stopping_patience} consecutive epochs."
+            )
+            break
 
     load_checkpoint(model, checkpoint_path, device)
     return history, best_macro_f1
