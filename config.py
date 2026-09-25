@@ -41,7 +41,7 @@ class Config:
 
     text_gnn_layers = 2
     text_gnn_heads = 4
-    text_graph_k = 3
+    text_graph_k = 2
 
     vision_gnn_layers = 2
 
@@ -53,8 +53,8 @@ class Config:
     num_workers = 0
     seed = 42
 
-    transformer_lr = 2e-5
-    graph_lr = 5e-5
+    transformer_lr = 2e-4
+    graph_lr = 5e-4
     weight_decay = 0.01
     max_grad_norm = 1.0
     # Retained so configurations stored by older checkpoints remain loadable.
@@ -64,12 +64,12 @@ class Config:
 
     focal_gamma = 2.0
     # Label order: supported, refuted, not enough information.
-    class_weights = [1, 1, 2]
+    class_weights = None
 
     alignment_weight = 0.1
     temperature = 0.07
 
-    dropout = 0.2
+    dropout = 0.3
     num_classes = 3
 
     def __init__(self, **overrides):
