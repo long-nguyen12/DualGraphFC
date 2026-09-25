@@ -3,6 +3,8 @@ torchvision
 torch-geometric
 transformers>=4.57.0
 sentence-transformers>=3.0.0
+peft>=0.11.0
+accelerate
 # GPU text retrieval also requires the Conda faiss-gpu package on Linux.
 sentencepiece>=0.2.0
 protobuf

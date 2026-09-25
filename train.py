@@ -4,7 +4,6 @@ from pathlib import Path
 import torch
 from tqdm.auto import tqdm
 
-from config import VISION_MODELS, resolve_vision_model
 from evaluate import build_dataloader, evaluate_model, load_checkpoint
 from utils import (
     build_classification_loss,

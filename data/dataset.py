@@ -1,5 +1,3 @@
-"""PyTorch input pipeline built on top of :mod:`dataset_mocheg`."""
-
 import json
 from pathlib import Path
 
@@ -7,7 +5,6 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
-from transformers import AutoImageProcessor
 
 from data.dataset_mocheg import MochegDataset as MochegLoader
 
@@ -22,8 +19,6 @@ FEATURE_CACHE_METADATA = "metadata.json"
 
 
 def feature_cache_path(cache_dir, split, claim_id):
-    """Return the cached vision-feature path for one claim."""
-
     claim_id = str(claim_id)
     if Path(claim_id).name != claim_id:
         raise ValueError(f"Invalid claim ID for feature cache: {claim_id!r}")
@@ -31,14 +26,7 @@ def feature_cache_path(cache_dir, split, claim_id):
 
 
 def load_feature_cache_metadata(cache_dir, vision_model, image_size):
-    """Load and validate the metadata shared by cached feature files."""
-
     path = Path(cache_dir) / FEATURE_CACHE_METADATA
-    if not path.is_file():
-        raise FileNotFoundError(
-            f"Feature-cache metadata was not found at {path}. "
-            "Run precompute_vision_features.py first."
-        )
     with path.open("r", encoding="utf-8") as handle:
         metadata = json.load(handle)
 
@@ -54,12 +42,6 @@ def load_feature_cache_metadata(cache_dir, vision_model, image_size):
             )
 
     feature_shape = metadata.get("feature_shape")
-    if (
-        not isinstance(feature_shape, list)
-        or len(feature_shape) != 3
-        or any(not isinstance(value, int) or value < 1 for value in feature_shape)
-    ):
-        raise ValueError("Feature-cache metadata has an invalid feature_shape")
     return tuple(feature_shape)
 
 
@@ -73,23 +55,7 @@ def _label_to_id(label):
         raise ValueError(f"Unknown MOCHEG label: {label!r}") from exc
 
 
-class _ImageTransform:
-    def __init__(self, processor):
-        self.processor = processor
-
-    def __call__(self, image):
-        return self.processor(
-            images=image,
-            return_tensors="pt",
-        )["pixel_values"][0]
-
-
-def build_image_transform(image_size=224, vision_model=None):
-    """Return preprocessing for a pretrained vision backbone."""
-
-    if vision_model is not None:
-        processor = AutoImageProcessor.from_pretrained(vision_model)
-        return _ImageTransform(processor)
+def build_image_transform(image_size=224):
     return transforms.Compose(
         [
             transforms.Resize((image_size, image_size)),
@@ -99,13 +65,6 @@ def build_image_transform(image_size=224, vision_model=None):
 
 
 class MochegDataset(Dataset):
-    """Adapt claim dictionaries from ``dataset_mocheg.py`` for PyTorch.
-
-    Each item contains raw text nodes, a list of successfully decoded image
-    tensors, an integer target, and metadata. Token padding and image padding
-    are deliberately deferred to :class:`MochegCollator`.
-    """
-
     def __init__(
         self,
         root,
@@ -124,10 +83,7 @@ class MochegDataset(Dataset):
         )
         if self.feature_cache_dir is None:
             self.feature_shape = None
-            self.image_transform = image_transform or build_image_transform(
-                image_size,
-                vision_model,
-            )
+            self.image_transform = image_transform or build_image_transform(image_size)
         else:
             self.feature_shape = load_feature_cache_metadata(
                 self.feature_cache_dir,
@@ -223,45 +179,15 @@ class MochegDataset(Dataset):
             self.split,
             source["claim_id"],
         )
-        if not path.is_file():
-            raise FileNotFoundError(
-                f"Cached features were not found for claim {source['claim_id']!r}: "
-                f"{path}. Re-run precompute_vision_features.py for {self.split!r}."
-            )
 
         payload = torch.load(path, map_location="cpu", weights_only=True)
-        if not isinstance(payload, dict) or "features" not in payload:
-            raise ValueError(f"Invalid feature-cache payload: {path}")
 
         source_ids = list(source["image_evidence_ids"])
-        if payload.get("source_image_evidence_ids") != source_ids:
-            raise ValueError(
-                f"Cached image IDs do not match the dataset for claim "
-                f"{source['claim_id']!r}; re-run precomputation"
-            )
 
         features = payload["features"]
         valid_indices = payload.get("valid_indices")
-        if not torch.is_tensor(features) or not torch.is_floating_point(features):
-            raise ValueError(f"Cached features must be a floating-point tensor: {path}")
-        if features.ndim != 4 or tuple(features.shape[1:]) != self.feature_shape:
-            raise ValueError(
-                f"Cached features have shape {tuple(features.shape)}; "
-                f"expected [images, {', '.join(map(str, self.feature_shape))}]"
-            )
-        if (
-            not torch.is_tensor(valid_indices)
-            or valid_indices.ndim != 1
-            or valid_indices.dtype != torch.long
-        ):
-            raise ValueError(
-                f"Cached valid_indices must be a one-dimensional long tensor: {path}"
-            )
+
         indices = valid_indices.tolist()
-        if len(indices) != features.size(0) or any(
-            index < 0 or index >= len(source_ids) for index in indices
-        ) or indices != sorted(set(indices)):
-            raise ValueError(f"Cached valid_indices are invalid: {path}")
 
         valid_index_set = set(indices)
         image_paths = [source["images"][index] for index in indices]
@@ -294,10 +220,7 @@ class MochegCollator:
             raise ValueError("Cannot collate an empty batch")
 
         batch_size = len(samples)
-        text_rows = [
-            [sample["claim"], *sample["evidence"]]
-            for sample in samples
-        ]
+        text_rows = [[sample["claim"], *sample["evidence"]] for sample in samples]
         num_text_nodes = max(len(row) for row in text_rows)
 
         text_node_mask = torch.zeros((batch_size, num_text_nodes), dtype=torch.bool)

@@ -57,17 +57,7 @@ def move_batch_to_device(batch, device):
 
 
 def contrastive_alignment_loss(text, image, temperature=0.07, valid_mask=None):
-    """One-way in-batch text-to-image contrastive loss."""
-
-    if text.ndim != 2 or image.shape != text.shape:
-        raise ValueError(
-            "text and image embeddings must share shape [batch, hidden_dim]"
-        )
-    if temperature <= 0:
-        raise ValueError("temperature must be positive")
     if valid_mask is not None:
-        if valid_mask.shape != (text.size(0),):
-            raise ValueError("valid_mask must have shape [batch]")
         valid_mask = valid_mask.to(device=text.device, dtype=torch.bool)
         text = text[valid_mask]
         image = image[valid_mask]

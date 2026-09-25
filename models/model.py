@@ -4,7 +4,7 @@ from torch import nn
 
 from models.cross_graph import CrossGraphReasoner
 from models.fusion import MultimodalFusion
-from models.text_encoder import LongTextEncoder
+from models.text_encoder import LongTextEncoder, TextEncoder
 from models.text_graph import TextGraph
 from models.vision_graph import VisionGraph
 
@@ -17,7 +17,7 @@ class DualGraphFC(nn.Module):
         vision_feature_shape=None,
     ):
         super().__init__()
-        self.text_encoder = LongTextEncoder(config, encoder=text_backbone)
+        self.text_encoder = TextEncoder(config, encoder=text_backbone)
         self.text_graph = TextGraph(config)
         self.vision_graph = VisionGraph(config, feature_shape=vision_feature_shape)
         self.cross_graph = CrossGraphReasoner(config)
@@ -83,11 +83,9 @@ class DualGraphFC(nn.Module):
         details["logits"] = self.classifier(details["fused"])
         details["fusion_text_embedding"] = details["text_embedding"]
         details["fusion_visual_embedding"] = details["visual_embedding"]
-        
+
         details["text_embedding"] = self.fusion.text_pool(text_nodes, text_mask)
-        details["visual_embedding"] = self.fusion.visual_pool(
-            visual_nodes, visual_mask
-        )
+        details["visual_embedding"] = self.fusion.visual_pool(visual_nodes, visual_mask)
         details["text_node_mask"] = text_mask
         details["visual_node_mask"] = visual_mask
 

@@ -31,8 +31,8 @@ class Config:
     long_text_model = "microsoft/deberta-v3-base"
 
     vision_model = VISION_MODELS["dinov2"]
-    vision_feature_cache_dir = None
-    retrieved_text_dir = None
+    vision_feature_cache_dir = "dataset/mocheg/vision_features"
+    retrieved_text_dir = "dataset/mocheg/retrieved_text"
     max_text_length = 512
 
     image_size = 224

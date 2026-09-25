@@ -49,3 +49,6 @@ outputs/
 !data/
 data/*
 !data/*.py
+
+docs/
+generation/

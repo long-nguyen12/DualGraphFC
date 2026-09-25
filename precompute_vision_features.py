@@ -100,8 +100,6 @@ def extract_features(
     feature_shape,
     batch_size,
 ):
-    """Return FP16 feature maps and indices of successfully loaded images."""
-
     feature_maps = []
     valid_indices = []
 
@@ -177,12 +175,6 @@ def parse_args():
         default="poolformer",
         help="Vision backbone preset (default: poolformer)",
     )
-    parser.add_argument(
-        "--split",
-        action="append",
-        choices=MochegDataset.SPLITS,
-        help="Split to process; repeat for multiple splits (default: all)",
-    )
     parser.add_argument("--batch-size", type=int, default=32)
     return parser.parse_args()
 
@@ -216,7 +208,7 @@ def main():
     )
 
     loader = MochegDataset(config.data_root)
-    for split in args.split or MochegDataset.SPLITS:
+    for split in MochegDataset.SPLITS:
         precompute_split(
             loader,
             split,
