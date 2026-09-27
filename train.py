@@ -231,7 +231,7 @@ def main():
         config,
         vision_feature_shape=train_loader.dataset.feature_shape,
     ).to(device)
-    optimizer = torch.optim.Adam(
+    optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=config.graph_lr,
         weight_decay=config.weight_decay,
