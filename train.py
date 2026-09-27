@@ -231,10 +231,9 @@ def main():
         config,
         vision_feature_shape=train_loader.dataset.feature_shape,
     ).to(device)
-    optimizer = torch.optim.SGD(
+    optimizer = torch.optim.Adam(
         model.parameters(),
         lr=config.graph_lr,
-        momentum=0.9,
         weight_decay=config.weight_decay,
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
