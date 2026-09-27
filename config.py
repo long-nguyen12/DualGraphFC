@@ -39,11 +39,11 @@ class Config:
     hidden_dim = 512
     text_finetune_layers = 0
 
-    text_gnn_layers = 2
+    text_gnn_layers = 1
     text_gnn_heads = 4
     text_graph_k = 2
 
-    vision_gnn_layers = 2
+    vision_gnn_layers = 1
 
     cross_heads = 4
 

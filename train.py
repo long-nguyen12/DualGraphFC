@@ -14,44 +14,6 @@ from utils import (
 )
 
 
-def build_optimizer(model, config, weight_decay=0.01):
-    transformer_ids = {
-        id(parameter) for parameter in model.text_encoder.encoder.parameters()
-    }
-
-    transformer_parameters = []
-    graph_parameters = []
-    for parameter in model.parameters():
-        if not parameter.requires_grad:
-            continue
-        target = (
-            transformer_parameters
-            if id(parameter) in transformer_ids
-            else graph_parameters
-        )
-        target.append(parameter)
-
-    parameter_groups = []
-    if transformer_parameters:
-        parameter_groups.append(
-            {"params": transformer_parameters, "lr": config.transformer_lr}
-        )
-    if graph_parameters:
-        parameter_groups.append({"params": graph_parameters, "lr": config.graph_lr})
-    if not parameter_groups:
-        raise ValueError("The model has no trainable parameters")
-
-    return torch.optim.AdamW(parameter_groups, weight_decay=weight_decay)
-
-
-def build_scheduler(optimizer, config):
-    return torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=config.epochs,
-        eta_min=config.min_lr,
-    )
-
-
 def train_one_epoch(
     model,
     dataloader,
@@ -103,6 +65,7 @@ def train_one_epoch(
         )
         totals["alignment_loss"] += alignment_loss.detach().item() * batch_size
         progress.set_postfix(loss=f"{totals['loss'] / total_examples:.4f}")
+        progress.set_postfix(lr=f"{optimizer.param_groups[0]['lr']:.2e}")
 
     if total_examples == 0:
         raise ValueError("Cannot train on an empty DataLoader")
@@ -144,14 +107,8 @@ def fit(
     criterion=None,
     scheduler=None,
 ):
-    """Train and retain the checkpoint with the highest validation macro-F1."""
-
-    if criterion is None:
-        criterion = build_classification_loss(config, device)
-    if scheduler is None:
-        scheduler = build_scheduler(optimizer, config)
     early_stopping_patience = getattr(config, "early_stopping_patience", None)
-    
+
     history = []
     best_macro_f1 = float("-inf")
     epochs_without_improvement = 0
@@ -274,8 +231,17 @@ def main():
         config,
         vision_feature_shape=train_loader.dataset.feature_shape,
     ).to(device)
-    optimizer = build_optimizer(model, config, weight_decay=config.weight_decay)
-    scheduler = build_scheduler(optimizer, config)
+    optimizer = torch.optim.SGD(
+        model.parameters(),
+        lr=config.graph_lr,
+        momentum=0.9,
+        weight_decay=config.weight_decay,
+    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=config.epochs,
+        eta_min=config.min_lr,
+    )
     criterion = build_classification_loss(config, device)
     vision_name = config.vision_model.rsplit("/", 1)[-1]
     checkpoint_path = str(Path(config.checkpoint_dir) / f"{vision_name}_best.pt")
