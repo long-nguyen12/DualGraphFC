@@ -66,13 +66,27 @@ class DualGraphFC(nn.Module):
             visual_mask=visual_mask,
             return_attention=return_attention,
         )
+        has_image = batch["has_image"].to(device=text_nodes.device).bool()
+        modality_scale = has_image[:, None, None].to(dtype=text_nodes.dtype)
+        fusion_text_nodes = text_nodes + modality_scale * (
+            cross_output["text_nodes"] - text_nodes
+        )
+        fusion_visual_nodes = cross_output["visual_nodes"] * modality_scale
+        fusion_text_consistency_nodes = (
+            cross_output["text_consistency_nodes"] * modality_scale
+        )
+        fusion_visual_consistency_nodes = (
+            cross_output["visual_consistency_nodes"] * modality_scale
+        )
+        fusion_visual_mask = visual_mask & has_image[:, None]
+
         fusion_output = self.fusion(
-            cross_output["text_nodes"],
-            cross_output["visual_nodes"],
-            cross_output["text_consistency_nodes"],
-            cross_output["visual_consistency_nodes"],
+            fusion_text_nodes,
+            fusion_visual_nodes,
+            fusion_text_consistency_nodes,
+            fusion_visual_consistency_nodes,
             text_mask=text_mask,
-            visual_mask=visual_mask,
+            visual_mask=fusion_visual_mask,
             return_details=return_details or return_attention,
         )
 
@@ -85,9 +99,12 @@ class DualGraphFC(nn.Module):
         details["fusion_visual_embedding"] = details["visual_embedding"]
 
         details["text_embedding"] = self.fusion.text_pool(text_nodes, text_mask)
-        details["visual_embedding"] = self.fusion.visual_pool(visual_nodes, visual_mask)
+        details["visual_embedding"] = self.fusion.visual_pool(
+            visual_nodes * modality_scale,
+            fusion_visual_mask,
+        )
         details["text_node_mask"] = text_mask
-        details["visual_node_mask"] = visual_mask
+        details["visual_node_mask"] = fusion_visual_mask
 
         if return_attention:
             details["text_gat_attention"] = text_attention
