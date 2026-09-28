@@ -2,6 +2,7 @@
 
 VISION_MODELS = {
     "poolformer": "sail/poolformer_s12",
+    "vit": "google/vit-base-patch16-224",
     "dinov2": "facebook/dinov2-base",
     "dinov3": "facebook/dinov3-vits16-pretrain-lvd1689m",
     "convnextv2": "facebook/convnextv2-tiny-22k-224",
@@ -30,7 +31,7 @@ class Config:
     # long_text_model = "allenai/longformer-base-4096"
     long_text_model = "microsoft/deberta-v3-base"
 
-    vision_model = VISION_MODELS["dinov2"]
+    vision_model = VISION_MODELS["vit"]
     vision_feature_cache_dir = "dataset/mocheg/vision_features"
     retrieved_text_dir = "dataset/mocheg/retrieved_text"
     max_text_length = 512
@@ -39,11 +40,11 @@ class Config:
     hidden_dim = 512
     text_finetune_layers = 0
 
-    text_gnn_layers = 1
+    text_gnn_layers = 2
     text_gnn_heads = 4
     text_graph_k = 2
 
-    vision_gnn_layers = 1
+    vision_gnn_layers = 2
 
     cross_heads = 4
 
