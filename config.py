@@ -54,14 +54,14 @@ class Config:
     num_workers = 0
     seed = 42
 
-    transformer_lr = 2e-4
-    graph_lr = 5e-4
+    transformer_lr = 2e-5
+    graph_lr = 5e-5
     weight_decay = 0.01
     max_grad_norm = 1.0
     # Retained so configurations stored by older checkpoints remain loadable.
     scheduler_factor = 0.5
     scheduler_patience = 2
-    min_lr = 1e-5
+    min_lr = 1e-6
 
     focal_gamma = 2.0
     # Label order: supported, refuted, not enough information.
