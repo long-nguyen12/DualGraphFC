@@ -24,6 +24,9 @@ class TextGraph(nn.Module):
             )
             for _ in range(num_layers)
         )
+        self.norms = nn.ModuleList(
+            nn.LayerNorm(self.hidden_dim) for _ in range(num_layers)
+        )
         self.dropout = nn.Dropout(dropout)
 
     def build_edges(self, features):
@@ -76,7 +79,8 @@ class TextGraph(nn.Module):
             edge_index = self.build_edges(nodes)
             layer_details = []
 
-            for layer in self.layers:
+            for layer, norm in zip(self.layers, self.norms):
+                residual = nodes
                 if return_attention:
                     nodes, (used_edges, attention) = layer(
                         nodes,
@@ -88,7 +92,7 @@ class TextGraph(nn.Module):
                     )
                 else:
                     nodes = layer(nodes, edge_index)
-                nodes = self.dropout(F.gelu(nodes))
+                nodes = norm(residual + self.dropout(F.gelu(nodes)))
 
             output[batch_index, valid] = nodes
             if return_attention:

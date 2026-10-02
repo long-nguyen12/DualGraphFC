@@ -37,7 +37,7 @@ class Config:
     max_text_length = 512
 
     image_size = 224
-    hidden_dim = 512
+    hidden_dim = 256
     text_finetune_layers = 0
 
     text_gnn_layers = 2

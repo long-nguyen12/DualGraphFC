@@ -7,6 +7,7 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 
 from data.dataset_mocheg import MochegDataset as MochegLoader
+from data.text_normalization import normalize_text
 
 LABELS = {
     "supported": 0,
@@ -220,7 +221,10 @@ class MochegCollator:
             raise ValueError("Cannot collate an empty batch")
 
         batch_size = len(samples)
-        text_rows = [[sample["claim"], *sample["evidence"]] for sample in samples]
+        text_rows = [
+            [normalize_text(text) for text in [sample["claim"], *sample["evidence"]]]
+            for sample in samples
+        ]
         num_text_nodes = max(len(row) for row in text_rows)
 
         text_node_mask = torch.zeros((batch_size, num_text_nodes), dtype=torch.bool)
