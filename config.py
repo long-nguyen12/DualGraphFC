@@ -63,11 +63,11 @@ class Config:
     scheduler_patience = 2
     min_lr = 1e-6
 
-    focal_gamma = 2.0
+    focal_gamma = 0.0
     # Label order: supported, refuted, not enough information.
     class_weights = None
 
-    alignment_weight = 0.0
+    alignment_weight = 0.1
     temperature = 0.07
 
     dropout = 0.3
