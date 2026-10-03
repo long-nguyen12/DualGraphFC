@@ -37,7 +37,7 @@ class Config:
     max_text_length = 512
 
     image_size = 224
-    hidden_dim = 256
+    hidden_dim = 512
     text_finetune_layers = 0
 
     text_gnn_layers = 2
@@ -63,7 +63,7 @@ class Config:
     scheduler_patience = 2
     min_lr = 1e-6
 
-    focal_gamma = 0.0
+    focal_gamma = 2.0
     # Label order: supported, refuted, not enough information.
     class_weights = None
 
