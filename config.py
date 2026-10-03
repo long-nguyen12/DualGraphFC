@@ -67,7 +67,7 @@ class Config:
     # Label order: supported, refuted, not enough information.
     class_weights = None
 
-    alignment_weight = 0.1
+    alignment_weight = 0.0
     temperature = 0.07
 
     dropout = 0.3
