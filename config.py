@@ -38,7 +38,7 @@ class Config:
 
     image_size = 224
     hidden_dim = 512
-    text_finetune_layers = 0
+    text_finetune_layers = 2
 
     text_gnn_layers = 2
     text_gnn_heads = 4
@@ -49,28 +49,29 @@ class Config:
     cross_heads = 4
 
     batch_size = 8
-    epochs = 30
-    early_stopping_patience = 5
+    epochs = 20
+    early_stopping_patience = 7
     num_workers = 0
     seed = 42
 
     transformer_lr = 2e-5
     graph_lr = 5e-5
-    weight_decay = 0.01
-    max_grad_norm = 1.0
+    weight_decay = 0.05
+    max_grad_norm = 0.5
     # Retained so configurations stored by older checkpoints remain loadable.
     scheduler_factor = 0.5
     scheduler_patience = 2
     min_lr = 1e-6
 
     focal_gamma = 2.0
+    label_smoothing = 0.1
     # Label order: supported, refuted, not enough information.
-    class_weights = None
+    class_weights = [1.3, 0.8, 1.3]
 
     alignment_weight = 0.1
     temperature = 0.07
 
-    dropout = 0.3
+    dropout = 0.4
     num_classes = 3
 
     def __init__(self, **overrides):

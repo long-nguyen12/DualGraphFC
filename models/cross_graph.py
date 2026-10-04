@@ -26,8 +26,10 @@ class CrossGraphReasoner(nn.Module):
         self.vision_norm = nn.LayerNorm(hidden_dim)
         self.dropout = nn.Dropout(config.dropout)
         self.consistency = nn.Sequential(
-            nn.Linear(hidden_dim * 4, hidden_dim),
+            nn.Linear(hidden_dim * 4, hidden_dim * 2),
             nn.GELU(),
+            nn.Dropout(config.dropout),
+            nn.Linear(hidden_dim * 2, hidden_dim),
             nn.Dropout(config.dropout),
         )
 

@@ -231,9 +231,14 @@ def main():
         config,
         vision_feature_shape=train_loader.dataset.feature_shape,
     ).to(device)
+    text_encoder_params = list(model.text_encoder.encoder.parameters())
+    text_encoder_ids = {id(p) for p in text_encoder_params}
+    other_params = [p for p in model.parameters() if id(p) not in text_encoder_ids]
     optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=config.graph_lr,
+        [
+            {"params": text_encoder_params, "lr": config.transformer_lr},
+            {"params": other_params, "lr": config.graph_lr},
+        ],
         weight_decay=config.weight_decay,
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(

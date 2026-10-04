@@ -210,21 +210,36 @@ class MochegCollator:
         max_text_length=256,
         image_size=224,
         feature_shape=None,
+        augment=False,
+        evidence_drop_prob=0.15,
     ):
         self.tokenizer = tokenizer
         self.max_text_length = max_text_length
         self.image_size = image_size
         self.feature_shape = feature_shape
+        self.augment = augment
+        self.evidence_drop_prob = evidence_drop_prob
 
     def __call__(self, samples):
         if not samples:
             raise ValueError("Cannot collate an empty batch")
 
         batch_size = len(samples)
-        text_rows = [
-            [normalize_text(text) for text in [sample["claim"], *sample["evidence"]]]
-            for sample in samples
-        ]
+        text_rows = []
+        for sample in samples:
+            nodes = [normalize_text(text) for text in [sample["claim"], *sample["evidence"]]]
+            if self.augment and len(nodes) > 1:
+                import random
+                # Keep claim (index 0) always; randomly drop evidence nodes.
+                kept = [nodes[0]] + [
+                    node for node in nodes[1:]
+                    if random.random() >= self.evidence_drop_prob
+                ]
+                # Guarantee at least one evidence node survives.
+                if len(kept) == 1:
+                    kept.append(nodes[1])
+                nodes = kept
+            text_rows.append(nodes)
         num_text_nodes = max(len(row) for row in text_rows)
 
         text_node_mask = torch.zeros((batch_size, num_text_nodes), dtype=torch.bool)

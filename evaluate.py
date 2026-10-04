@@ -44,6 +44,7 @@ def build_dataloader(
         max_text_length=config.max_text_length,
         image_size=config.image_size,
         feature_shape=dataset.feature_shape,
+        augment=(split == "train"),
     )
     loader = DataLoader(
         dataset,

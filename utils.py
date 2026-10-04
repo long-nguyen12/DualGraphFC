@@ -11,22 +11,35 @@ from torch import nn
 
 
 class FocalLoss(nn.Module):
-    """Class-weighted multiclass focal loss."""
+    """Class-weighted multiclass focal loss with optional label smoothing."""
 
-    def __init__(self, gamma=2.0, weight=None):
+    def __init__(self, gamma=2.0, weight=None, label_smoothing=0.0):
         super().__init__()
         self.gamma = gamma
+        self.label_smoothing = label_smoothing
         if weight is not None:
             weight = torch.as_tensor(weight, dtype=torch.float32)
         self.register_buffer("weight", weight)
 
     def forward(self, logits, targets):
+        num_classes = logits.size(-1)
         log_probabilities = F.log_softmax(logits, dim=-1)
-        target_log_probabilities = log_probabilities.gather(
-            1, targets.unsqueeze(1)
-        ).squeeze(1)
-        focal_factor = (1.0 - target_log_probabilities.exp()).pow(self.gamma)
-        losses = -focal_factor * target_log_probabilities
+
+        if self.label_smoothing > 0.0:
+            smooth = self.label_smoothing / (num_classes - 1)
+            one_hot = logits.new_full(logits.shape, smooth)
+            one_hot.scatter_(1, targets.unsqueeze(1), 1.0 - self.label_smoothing)
+            target_log_probabilities = (one_hot * log_probabilities).sum(dim=-1)
+            # focal factor based on true class probability
+            true_log_prob = log_probabilities.gather(1, targets.unsqueeze(1)).squeeze(1)
+            focal_factor = (1.0 - true_log_prob.exp()).pow(self.gamma)
+            losses = -focal_factor * target_log_probabilities
+        else:
+            target_log_probabilities = log_probabilities.gather(
+                1, targets.unsqueeze(1)
+            ).squeeze(1)
+            focal_factor = (1.0 - target_log_probabilities.exp()).pow(self.gamma)
+            losses = -focal_factor * target_log_probabilities
 
         if self.weight is None:
             return losses.mean()
@@ -38,6 +51,7 @@ def build_classification_loss(config, device):
     return FocalLoss(
         gamma=getattr(config, "focal_gamma", 2.0),
         weight=getattr(config, "class_weights", None),
+        label_smoothing=getattr(config, "label_smoothing", 0.0),
     ).to(device)
 
 
