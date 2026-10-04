@@ -1,44 +1,22 @@
 """DualGraphFC configuration."""
 
-VISION_MODELS = {
-    "poolformer": "sail/poolformer_s12",
-    "vit": "google/vit-base-patch16-224",
-    "dinov2": "facebook/dinov2-base",
-    "dinov3": "facebook/dinov3-vits16-pretrain-lvd1689m",
-    "convnextv2": "facebook/convnextv2-tiny-22k-224",
-}
-
-
-def resolve_vision_model(name):
-    try:
-        return VISION_MODELS[name]
-    except KeyError as exc:
-        choices = ", ".join(VISION_MODELS)
-        raise ValueError(
-            f"Unknown vision model {name!r}; choose one of: {choices}"
-        ) from exc
-
-
 class Config:
+    architecture_version = 2
     # Directory containing train/, val/, and test/ MOCHEG directories.
     data_root = "dataset/mocheg"
-
-    checkpoint_dir = "outputs/checkpoints"
-    log_dir = "outputs/logs"
-    prediction_dir = "outputs/predictions"
+    run_dir = "outputs/runs"
 
     text_model = "microsoft/deberta-v3-base"
-    # long_text_model = "allenai/longformer-base-4096"
-    long_text_model = "microsoft/deberta-v3-base"
-
-    vision_model = VISION_MODELS["vit"]
-    vision_feature_cache_dir = "dataset/mocheg/vision_features"
+    text_model_revision = None
+    vision_model = "openai/clip-vit-base-patch32"
+    vision_model_revision = None
     retrieved_text_dir = "dataset/mocheg/retrieved_text"
     max_text_length = 512
 
     image_size = 224
-    hidden_dim = 512
+    hidden_dim = 256
     text_finetune_layers = 2
+    vision_finetune_layers = 2
 
     text_gnn_layers = 2
     text_gnn_heads = 4
@@ -55,24 +33,16 @@ class Config:
     seed = 42
 
     transformer_lr = 2e-5
+    vision_lr = 1e-5
     graph_lr = 5e-5
     weight_decay = 0.02
     max_grad_norm = 0.5
-    # Retained so configurations stored by older checkpoints remain loadable.
-    scheduler_factor = 0.5
-    scheduler_patience = 2
     min_lr = 1e-6
     warmup_epochs = 3
 
-    focal_gamma = 2.0
-    label_smoothing = 0.05
-    # Label order: supported, refuted, not enough information.
-    class_weights = [1.3, 0.8, 1.3]
+    alignment_weight = 0.0
 
-    alignment_weight = 0.1
-    temperature = 0.07
-
-    dropout = 0.4
+    dropout = 0.3
     num_classes = 3
 
     def __init__(self, **overrides):
@@ -80,6 +50,10 @@ class Config:
             if name not in self.field_names():
                 raise ValueError(f"Unknown configuration option: {name}")
             setattr(self, name, value)
+        if self.architecture_version != 2:
+            raise ValueError("Only DualGraphFC architecture_version=2 is supported")
+        if self.alignment_weight != 0:
+            raise ValueError("Architecture version 2 uses classification only")
 
     @classmethod
     def field_names(cls):
@@ -94,4 +68,9 @@ class Config:
 
     @classmethod
     def from_dict(cls, values):
+        if values.get("architecture_version") != 2:
+            raise ValueError(
+                "Checkpoint is not DualGraphFC architecture version 2; "
+                "use its original implementation to load it"
+            )
         return cls(**values)

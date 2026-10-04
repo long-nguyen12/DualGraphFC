@@ -40,7 +40,9 @@ Thumbs.db
 .agents/
 .codex/
 data/
-tests/
+!tests/
+tests/*
+!tests/*.py
 dataset/
 datasets/
 outputs/
@@ -50,5 +52,8 @@ outputs/
 data/*
 !data/*.py
 
-docs/
+!docs/
+docs/*
+!docs/training_v2.md
 generation/
+docs/

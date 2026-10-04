@@ -1,11 +1,13 @@
 """End-to-end DualGraphFC model."""
 
+import torch
 from torch import nn
 
 from models.cross_graph import CrossGraphReasoner
 from models.fusion import MultimodalFusion
-from models.text_encoder import LongTextEncoder, TextEncoder
+from models.text_encoder import TextEncoder
 from models.text_graph import TextGraph
+from models.vision_encoder import CLIPVisionEncoder
 from models.vision_graph import VisionGraph
 
 
@@ -14,12 +16,15 @@ class DualGraphFC(nn.Module):
         self,
         config,
         text_backbone=None,
-        vision_feature_shape=None,
+        vision_backbone=None,
     ):
         super().__init__()
         self.text_encoder = TextEncoder(config, encoder=text_backbone)
+        self.text_role_embedding = nn.Embedding(2, config.hidden_dim)
+        nn.init.normal_(self.text_role_embedding.weight, std=0.02)
         self.text_graph = TextGraph(config)
-        self.vision_graph = VisionGraph(config, feature_shape=vision_feature_shape)
+        self.vision_encoder = CLIPVisionEncoder(config, encoder=vision_backbone)
+        self.vision_graph = VisionGraph(config, feature_shape=self.vision_encoder.feature_shape)
         self.cross_graph = CrossGraphReasoner(config)
         self.fusion = MultimodalFusion(config)
 
@@ -32,11 +37,27 @@ class DualGraphFC(nn.Module):
         )
 
     def forward(self, batch, return_details=False, return_attention=False):
+        if "images" not in batch or "image_mask" not in batch:
+            raise ValueError("Every sample requires actual images and image_mask")
         text_mask = batch["text_node_mask"].bool()
+        if (
+            text_mask.ndim != 2
+            or text_mask.size(0) == 0
+            or text_mask.size(1) < 2
+            or not text_mask[:, 0].all()
+            or not text_mask[:, 1:].any(dim=1).all()
+        ):
+            raise ValueError("Every sample requires a claim and at least one text evidence")
         text_features = self.text_encoder(
             batch["input_ids"],
             batch["attention_mask"],
             node_mask=text_mask,
+            token_type_ids=batch.get("token_type_ids"),
+        )
+        role_ids = torch.ones(text_mask.shape, dtype=torch.long, device=text_features.device)
+        role_ids[:, 0] = 0
+        text_features = (text_features + self.text_role_embedding(role_ids)) * (
+            text_mask.unsqueeze(-1).to(text_features.dtype)
         )
 
         if return_attention:
@@ -47,8 +68,9 @@ class DualGraphFC(nn.Module):
             text_nodes = self.text_graph(text_features, text_mask)
             text_attention = None
 
+        feature_maps = self.vision_encoder(batch["images"], batch["image_mask"])
         vision_result = self.vision_graph(
-            feature_maps=batch.get("image_features"),
+            feature_maps=feature_maps,
             image_mask=batch["image_mask"],
             return_mask=True,
             return_details=return_attention,
@@ -66,27 +88,13 @@ class DualGraphFC(nn.Module):
             visual_mask=visual_mask,
             return_attention=return_attention,
         )
-        has_image = batch["has_image"].to(device=text_nodes.device).bool()
-        modality_scale = has_image[:, None, None].to(dtype=text_nodes.dtype)
-        fusion_text_nodes = text_nodes + modality_scale * (
-            cross_output["text_nodes"] - text_nodes
-        )
-        fusion_visual_nodes = cross_output["visual_nodes"] * modality_scale
-        fusion_text_consistency_nodes = (
-            cross_output["text_consistency_nodes"] * modality_scale
-        )
-        fusion_visual_consistency_nodes = (
-            cross_output["visual_consistency_nodes"] * modality_scale
-        )
-        fusion_visual_mask = visual_mask & has_image[:, None]
-
         fusion_output = self.fusion(
-            fusion_text_nodes,
-            fusion_visual_nodes,
-            fusion_text_consistency_nodes,
-            fusion_visual_consistency_nodes,
+            cross_output["text_nodes"],
+            cross_output["visual_nodes"],
+            cross_output["text_consistency_nodes"],
+            cross_output["visual_consistency_nodes"],
             text_mask=text_mask,
-            visual_mask=fusion_visual_mask,
+            visual_mask=visual_mask,
             return_details=return_details or return_attention,
         )
 
@@ -98,13 +106,9 @@ class DualGraphFC(nn.Module):
         details["fusion_text_embedding"] = details["text_embedding"]
         details["fusion_visual_embedding"] = details["visual_embedding"]
 
-        details["text_embedding"] = self.fusion.text_pool(text_nodes, text_mask)
-        details["visual_embedding"] = self.fusion.visual_pool(
-            visual_nodes * modality_scale,
-            fusion_visual_mask,
-        )
         details["text_node_mask"] = text_mask
-        details["visual_node_mask"] = fusion_visual_mask
+        details["visual_node_mask"] = visual_mask
+        details["text_node_encoding"] = "claim_and_evidence_claim_pairs"
 
         if return_attention:
             details["text_gat_attention"] = text_attention

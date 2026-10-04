@@ -70,6 +70,8 @@ class TextGraph(nn.Module):
             )
         else:
             node_mask = node_mask.to(device=features.device, dtype=torch.bool)
+        if not node_mask[:, 0].all() or not node_mask[:, 1:].any(dim=1).all():
+            raise ValueError("Text graphs require a claim and at least one evidence node")
 
         output = features.new_zeros(features.shape)
         batch_details = []

@@ -26,7 +26,7 @@ class VisionGraphBlock(nn.Module):
 
 
 class VisionGraph(nn.Module):
-    """Reason spatially over precomputed vision feature maps."""
+    """Reason spatially over feature maps from the online CLIP encoder."""
 
     def __init__(self, config, feature_shape=None):
         super().__init__()
@@ -50,8 +50,6 @@ class VisionGraph(nn.Module):
         self.blocks = nn.ModuleList(
             VisionGraphBlock(self.hidden_dim, dropout) for _ in range(num_layers)
         )
-        self.no_image_token = nn.Parameter(torch.empty(1, 1, self.hidden_dim))
-        nn.init.normal_(self.no_image_token, std=0.02)
 
     @staticmethod
     def _build_grid_edges(height, width):
@@ -98,28 +96,13 @@ class VisionGraph(nn.Module):
             )
         else:
             image_mask = image_mask.to(device=values.device, dtype=torch.bool)
+        if max_images == 0 or not image_mask.any(dim=1).all():
+            raise ValueError("Every visual graph requires at least one valid image")
+        if (channels, height, width) != self.feature_shape:
+            raise ValueError("Vision feature maps have an unexpected spatial shape")
 
         feature_height, feature_width = self.feature_grid
         features_per_image = feature_height * feature_width
-        no_image = ~image_mask.any(dim=1)
-
-        # A collator normally keeps M >= 1. Supporting M == 0 here makes the
-        # missing-image contract explicit and avoids encoding empty tensors.
-        if max_images == 0:
-            nodes = self.no_image_token.expand(batch_size, 1, -1)
-            visual_node_mask = torch.ones(
-                (batch_size, 1), dtype=torch.bool, device=values.device
-            )
-            details = {
-                "patch_grid": (feature_height, feature_width),
-                "patches_per_image": features_per_image,
-                "image_mask": image_mask,
-                "no_image": no_image,
-                "edge_indices": [[] for _ in range(batch_size)],
-            }
-            return self._format_output(
-                nodes, visual_node_mask, details, return_mask, return_details
-            )
 
         flat_values = values.reshape(batch_size * max_images, channels, height, width)
         flat_image_mask = image_mask.reshape(-1)
@@ -128,36 +111,29 @@ class VisionGraph(nn.Module):
             [None for _ in range(max_images)] for _ in range(batch_size)
         ]
 
-        if valid_indices.numel():
-            valid_feature_maps = flat_values[valid_indices]
-            valid_feature_maps = valid_feature_maps.to(dtype=self.projection.weight.dtype)
-            valid_features = valid_feature_maps.flatten(2).transpose(1, 2).contiguous()
-            valid_features = self.projection(valid_features)
-            encoded_images = []
-            for valid_index, feature_nodes in zip(valid_indices, valid_features):
-                edge_index = self.build_edges(feature_nodes)
-                for block in self.blocks:
-                    feature_nodes = block(feature_nodes, edge_index)
-                encoded_images.append(feature_nodes)
+        valid_feature_maps = flat_values[valid_indices]
+        valid_feature_maps = valid_feature_maps.to(dtype=self.projection.weight.dtype)
+        valid_features = valid_feature_maps.flatten(2).transpose(1, 2).contiguous()
+        valid_features = self.projection(valid_features)
+        encoded_images = []
+        for valid_index, feature_nodes in zip(valid_indices, valid_features):
+            edge_index = self.build_edges(feature_nodes)
+            for block in self.blocks:
+                feature_nodes = block(feature_nodes, edge_index)
+            encoded_images.append(feature_nodes)
 
-                if return_details:
-                    flat_index = int(valid_index.item())
-                    batch_index, image_index = divmod(flat_index, max_images)
-                    edge_details[batch_index][image_index] = edge_index
+            if return_details:
+                flat_index = int(valid_index.item())
+                batch_index, image_index = divmod(flat_index, max_images)
+                edge_details[batch_index][image_index] = edge_index
 
-            encoded_images = torch.stack(encoded_images)
-            flat_nodes = encoded_images.new_zeros(
-                batch_size * max_images,
-                features_per_image,
-                self.hidden_dim,
-            )
-            flat_nodes = flat_nodes.index_copy(0, valid_indices, encoded_images)
-        else:
-            flat_nodes = self.projection.weight.new_zeros(
-                batch_size * max_images,
-                features_per_image,
-                self.hidden_dim,
-            )
+        encoded_images = torch.stack(encoded_images)
+        flat_nodes = encoded_images.new_zeros(
+            batch_size * max_images,
+            features_per_image,
+            self.hidden_dim,
+        )
+        flat_nodes = flat_nodes.index_copy(0, valid_indices, encoded_images)
 
         nodes = flat_nodes.reshape(
             batch_size, max_images * features_per_image, self.hidden_dim
@@ -166,20 +142,12 @@ class VisionGraph(nn.Module):
             -1, -1, features_per_image
         ).reshape(batch_size, -1)
 
-        # Keep exactly one valid key/value for samples with no image. This
-        # prevents all-masked rows (and NaNs) in downstream cross-attention.
-        token_positions = torch.zeros_like(visual_node_mask)
-        token_positions[:, 0] = no_image
-        nodes = nodes + token_positions.unsqueeze(-1).to(nodes.dtype) * self.no_image_token
-        visual_node_mask = visual_node_mask | token_positions
-
         details = {
             # Keep these public names for inference/checkpoint consumers. They
             # describe the backbone's final spatial feature grid.
             "patch_grid": (feature_height, feature_width),
             "patches_per_image": features_per_image,
             "image_mask": image_mask,
-            "no_image": no_image,
             "edge_indices": edge_details,
         }
         return self._format_output(

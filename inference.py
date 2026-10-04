@@ -1,4 +1,4 @@
-"""Run DualGraphFC on a claim and user-supplied ground-truth evidence."""
+"""Run DualGraphFC v2 on a claim, textual evidence, and real evidence images."""
 
 import argparse
 from html import unescape
@@ -7,51 +7,33 @@ import re
 
 from matplotlib.figure import Figure
 import networkx as nx
+from PIL import Image
 import torch
 import torch.nn.functional as F
-from transformers import AutoTokenizer
 
 from config import Config
 from data.dataset import (
     ID_TO_LABEL,
-    MochegDataset,
     MochegCollator,
-    load_feature_cache_metadata,
+    build_image_transform,
+    load_rgb_image,
 )
 from data.dataset_mocheg import MochegDataset as MochegLoader
-from evaluate import load_checkpoint, read_checkpoint
+from data.text_normalization import normalize_text
+from data.tokenization import load_text_tokenizer
+from evaluate import build_dataloader, load_checkpoint, read_checkpoint
 from models.model import DualGraphFC
-from utils import move_batch_to_device, save_json
+from utils import autocast_context, move_batch_to_device, resolve_device, save_json
 
 
-def load_inference_bundle(
-    checkpoint_path,
-    requested_device="auto",
-    feature_cache_dir=None,
-):
+def load_inference_bundle(checkpoint_path, requested_device="auto"):
     """Restore the saved configuration, tokenizer, and model."""
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_device(requested_device)
     checkpoint = read_checkpoint(checkpoint_path)
-    if "config" in checkpoint:
-        config = Config.from_dict(checkpoint["config"])
-    else:
-        config = Config()
-    if feature_cache_dir is not None:
-        config.vision_feature_cache_dir = feature_cache_dir
-    if config.vision_feature_cache_dir is None:
-        raise ValueError(
-            "A vision feature cache is required. Pass --feature-cache or set "
-            "vision_feature_cache_dir in the saved configuration."
-        )
-    feature_shape = load_feature_cache_metadata(
-        config.vision_feature_cache_dir,
-        config.vision_model,
-        config.image_size,
-    )
-
-    tokenizer = AutoTokenizer.from_pretrained(config.long_text_model)
-    model = DualGraphFC(config, vision_feature_shape=feature_shape).to(device)
+    config = Config.from_dict(checkpoint["config"])
+    tokenizer = load_text_tokenizer(config)
+    model = DualGraphFC(config).to(device)
     load_checkpoint(model, checkpoint, device)
     model.eval()
     return model, tokenizer, config, device
@@ -105,7 +87,7 @@ def _save_text_graph(outputs, text_nodes, output_dir):
     graph = nx.DiGraph()
     labels = {}
     for index, text in enumerate(text_nodes):
-        prefix = "Claim" if index == 0 else f"E{index}"
+        prefix = "Claim" if index == 0 else f"Pair E{index}"
         labels[index] = f"{prefix}: {_short_label(text)}"
         graph.add_node(index)
     for (source, target), weight in zip(edges, weights):
@@ -130,7 +112,7 @@ def _save_text_graph(outputs, text_nodes, output_dir):
         clip_on=False,
         ax=axis,
     )
-    axis.set_title("Text graph: final GAT layer")
+    axis.set_title("Claim-evidence graph: final GAT layer")
     axis.margins(0.35)
     axis.set_axis_off()
     path = output_dir / "text_graph.png"
@@ -208,7 +190,7 @@ def _save_cross_attention(outputs, text_nodes, image_paths, output_dir):
     axis.set_yticks(range(len(text_nodes)))
     axis.set_yticklabels(
         [
-            f"{'Claim' if index == 0 else f'E{index}'}: {_short_label(text)}"
+            f"{'Claim' if index == 0 else f'Pair E{index}'}: {_short_label(text)}"
             for index, text in enumerate(text_nodes)
         ],
         fontsize=8,
@@ -230,10 +212,6 @@ def _save_cross_attention(outputs, text_nodes, image_paths, output_dir):
         )
         for index in range(1, len(image_paths)):
             axis.axvline(index * patches_per_image - 0.5, color="white", linewidth=1)
-    else:
-        axis.set_xticks([0])
-        axis.set_xticklabels(["No image"])
-
     figure.colorbar(image, ax=axis, label="Attention")
     path = output_dir / "cross_attention.png"
     figure.savefig(path, dpi=180, bbox_inches="tight")
@@ -330,23 +308,6 @@ def visualize_graphs(
     return paths
 
 
-def load_dataset_sample(data_root, split="test", sample_index=0):
-    """Load one claim and all of its evidence from a MOCHEG split."""
-
-    if sample_index < 0:
-        raise ValueError("sample_index must be non-negative")
-    samples = MochegLoader(data_root).load_split(
-        split,
-        limit=sample_index + 1,
-    )
-    if sample_index >= len(samples):
-        raise IndexError(
-            f"sample_index {sample_index} is outside the {split!r} split "
-            f"with {len(samples)} samples"
-        )
-    return samples[sample_index]
-
-
 @torch.no_grad()
 def predict(
     model,
@@ -354,55 +315,90 @@ def predict(
     config,
     claim,
     evidence=None,
-    image_features=None,
     image_paths=None,
     device=None,
     visualization_dir=None,
 ):
-    """Return a prediction and the available attention information."""
+    """Read real images and predict only when both evidence modalities exist."""
 
-    model.eval()
-    evidence = list(evidence or [])
-    feature_shape = model.vision_graph.feature_shape
-    if image_features is None:
-        image_features = torch.empty((0, *feature_shape), dtype=torch.float32)
-    if (
-        not torch.is_tensor(image_features)
-        or not torch.is_floating_point(image_features)
-        or image_features.ndim != 4
-        or tuple(image_features.shape[1:]) != feature_shape
-    ):
+    claim = normalize_text(claim)
+    evidence = [normalize_text(text) for text in evidence or []]
+    evidence = [text for text in evidence if text]
+    if not claim:
+        raise ValueError("A non-empty claim is required")
+    if not evidence:
+        raise ValueError("At least one non-empty text evidence is required")
+    if not image_paths:
+        raise ValueError("At least one readable image is required")
+
+    images = []
+    loaded_paths = []
+    skipped_paths = []
+    for raw_path in image_paths:
+        path = Path(raw_path).expanduser()
+        try:
+            image = load_rgb_image(path)
+        except (OSError, ValueError, Image.DecompressionBombError):
+            skipped_paths.append(str(path))
+            continue
+        images.append(image)
+        loaded_paths.append(str(path.resolve()))
+    if not images:
         raise ValueError(
-            "image_features must be a floating-point tensor with shape "
-            f"[images, {', '.join(map(str, feature_shape))}]"
+            "At least one readable image is required; failed paths: "
+            + ", ".join(skipped_paths)
         )
-    loaded_paths = [str(Path(path).expanduser()) for path in image_paths or []]
-    if loaded_paths and len(loaded_paths) != image_features.size(0):
-        raise ValueError("image_paths must match the number of cached image features")
+    transform = build_image_transform(
+        image_size=config.image_size,
+        vision_model=config.vision_model,
+        vision_model_revision=config.vision_model_revision,
+    )
+    images = [transform(image) for image in images]
     sample = {
         "claim": claim,
         "evidence": evidence,
-        "image_features": image_features,
+        "images": images,
         # The collator requires a label, but inference does not use it.
         "label": 0,
         "metadata": {
+            "text_evidence_ids": [
+                f"manual-text-{index + 1}" for index in range(len(evidence))
+            ],
+            "image_evidence_ids": [Path(path).name for path in loaded_paths],
             "image_paths": loaded_paths,
-            "skipped_image_paths": [],
+            "skipped_image_paths": skipped_paths,
         },
     }
+    return _predict_sample(
+        model, tokenizer, config, sample, device, visualization_dir
+    )
+
+
+@torch.no_grad()
+def _predict_sample(model, tokenizer, config, sample, device, visualization_dir):
+    """Share the complete-input collator and retain dataset evidence identity."""
+
+    model.eval()
+    claim = sample["claim"]
+    evidence = sample["evidence"]
+    metadata = sample["metadata"]
+    loaded_paths = metadata["image_paths"]
     collator = MochegCollator(
         tokenizer,
         max_text_length=config.max_text_length,
         image_size=config.image_size,
-        feature_shape=feature_shape,
+        augment=False,
     )
     batch = collator([sample])
     if device is None:
         device = next(model.parameters()).device
+    else:
+        device = resolve_device(device)
     batch = move_batch_to_device(batch, device)
-    outputs = model(batch, return_details=True, return_attention=True)
+    with autocast_context(device):
+        outputs = model(batch, return_details=True, return_attention=True)
 
-    probabilities = torch.softmax(outputs["logits"], dim=-1)[0]
+    probabilities = torch.softmax(outputs["logits"].float(), dim=-1)[0]
     label_id = int(probabilities.argmax().item())
     text_mask = outputs["text_node_mask"]
     visual_mask = outputs.get("visual_node_mask")
@@ -418,6 +414,10 @@ def predict(
             for index, value in enumerate(probabilities.detach().cpu().tolist())
         },
         "text_nodes": [claim, *evidence],
+        "text_node_encoding": ["claim", *["evidence_claim_pair" for _ in evidence]],
+        "claim_residual": True,
+        "text_evidence_ids": list(metadata["text_evidence_ids"]),
+        "image_evidence_ids": list(metadata["image_evidence_ids"]),
         "text_attention": _valid_values(
             outputs.get("text_pool_attention"), text_mask
         ),
@@ -443,17 +443,24 @@ def predict(
         },
         "patch_grid": None,
         "loaded_image_paths": loaded_paths,
-        "skipped_image_paths": [],
+        "skipped_image_paths": list(metadata.get("skipped_image_paths", [])),
     }
     vision_details = outputs.get("vision_graph")
     if vision_details is not None:
         result["patch_grid"] = list(vision_details["patch_grid"])
     if visualization_dir is not None:
+        mean = torch.tensor([0.48145466, 0.4578275, 0.40821073])[:, None, None]
+        std = torch.tensor([0.26862954, 0.26130258, 0.27577711])[:, None, None]
+        display_images = [
+            (image.detach().float().cpu() * std + mean).clamp(0, 1)
+            for image in sample["images"]
+        ]
         result["visualizations"] = visualize_graphs(
             outputs,
             [claim, *evidence],
             loaded_paths,
             visualization_dir,
+            display_images=display_images,
         )
     return result
 
@@ -468,19 +475,19 @@ def predict_dataset_sample(
     device=None,
     visualization_dir=None,
 ):
-    """Run inference on one indexed MOCHEG sample."""
+    """Index the same complete-input subset used by evaluation."""
 
     if sample_index < 0:
         raise ValueError("sample_index must be non-negative")
-    dataset = MochegDataset(
-        data_root,
+    inference_config = Config.from_dict(config.to_dict())
+    inference_config.data_root = data_root
+    dataloader, _ = build_dataloader(
+        inference_config,
         split,
-        image_size=config.image_size,
-        vision_model=config.vision_model,
-        feature_cache_dir=config.vision_feature_cache_dir,
-        retrieved_text_dir=config.retrieved_text_dir,
+        tokenizer=tokenizer,
         limit=sample_index + 1,
     )
+    dataset = dataloader.dataset
     if sample_index >= len(dataset):
         raise IndexError(
             f"sample_index {sample_index} is outside the {split!r} split "
@@ -488,16 +495,13 @@ def predict_dataset_sample(
         )
     sample = dataset[sample_index]
     metadata = sample["metadata"]
-    result = predict(
+    result = _predict_sample(
         model,
         tokenizer,
         config,
-        sample["claim"],
-        evidence=sample["evidence"],
-        image_features=sample["image_features"],
-        image_paths=metadata["image_paths"],
-        device=device,
-        visualization_dir=visualization_dir,
+        sample,
+        device,
+        visualization_dir,
     )
     ground_truth_id = sample["label"]
     result["dataset_sample"] = {
@@ -515,7 +519,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Run DualGraphFC inference")
     parser.add_argument(
         "--checkpoint",
-        default="outputs/checkpoints/poolformer_s12_best.pt",
+        required=True,
     )
     inputs = parser.add_mutually_exclusive_group(required=True)
     inputs.add_argument("--claim", help="Manual claim text")
@@ -526,18 +530,10 @@ def parse_args():
     )
     parser.add_argument("--evidence", action="append", default=[])
     parser.add_argument(
-        "--feature-file",
-        help="Cached .pt payload containing a 'features' tensor",
-    )
-    parser.add_argument(
         "--image",
         action="append",
         default=[],
-        help="Optional image path label for each row in --feature-file",
-    )
-    parser.add_argument(
-        "--feature-cache",
-        help="Precomputed vision-feature directory",
+        help="Real evidence image path; repeat for multiple images",
     )
     parser.add_argument("--data-root", help="Directory containing MOCHEG splits")
     parser.add_argument(
@@ -558,16 +554,15 @@ def parse_args():
 def main():
     args = parse_args()
     if args.sample_index is not None and (
-        args.evidence or args.image or args.feature_file
+        args.evidence or args.image
     ):
         raise ValueError(
-            "--evidence, --image, and --feature-file cannot be combined with "
+            "--evidence and --image cannot be combined with "
             "--sample-index"
         )
     model, tokenizer, config, device = load_inference_bundle(
         args.checkpoint,
         args.device,
-        feature_cache_dir=args.feature_cache,
     )
     if args.sample_index is not None:
         result = predict_dataset_sample(
@@ -581,25 +576,12 @@ def main():
             visualization_dir=args.visualize_dir,
         )
     else:
-        image_features = None
-        if args.feature_file is not None:
-            payload = torch.load(
-                Path(args.feature_file).expanduser(),
-                map_location="cpu",
-                weights_only=True,
-            )
-            if not isinstance(payload, dict) or "features" not in payload:
-                raise ValueError(
-                    "--feature-file must contain a saved 'features' tensor"
-                )
-            image_features = payload["features"]
         result = predict(
             model,
             tokenizer,
             config,
             args.claim,
             evidence=args.evidence,
-            image_features=image_features,
             image_paths=args.image,
             device=device,
             visualization_dir=args.visualize_dir,

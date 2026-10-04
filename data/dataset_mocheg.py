@@ -3,6 +3,8 @@
 import csv
 from pathlib import Path
 
+from data.text_normalization import normalize_text
+
 
 class MochegDataset:
     """Load MOCHEG rows as claim-level dictionaries."""
@@ -136,7 +138,7 @@ class MochegDataset:
         missing_claim_ids = {
             claim_id
             for claim_id, sample in samples.items()
-            if not sample["text_evidence"]
+            if not any(normalize_text(text) for text in sample["text_evidence"])
         }
         if not missing_claim_ids:
             return
@@ -171,11 +173,9 @@ class MochegDataset:
                     ) from exc
                 retrieved[claim_id].append((rank, row["corpus_id"], text))
 
-        unresolved = []
         for claim_id in missing_claim_ids:
             rows = sorted(retrieved[claim_id], key=lambda row: (row[0], row[1]))
             if not rows:
-                unresolved.append(claim_id)
                 continue
             sample = samples[claim_id]
             sample["text_evidence"] = [row[2] for row in rows]
@@ -183,13 +183,6 @@ class MochegDataset:
                 f"retrieved:{row[1]}" for row in rows
             ]
             sample["text_evidence_source"] = "retrieved"
-
-        if unresolved:
-            preview = ", ".join(sorted(unresolved)[:10])
-            raise ValueError(
-                f"Retrieved-text file {path} has no evidence for "
-                f"{len(unresolved)} missing claims (first IDs: {preview})"
-            )
 
     def _check_split(self, split):
         if split not in self.SPLITS:

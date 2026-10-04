@@ -51,6 +51,8 @@ class CrossGraphReasoner(nn.Module):
             )
         text_mask = text_mask.to(device=text_nodes.device, dtype=torch.bool)
         visual_mask = visual_mask.to(device=visual_nodes.device, dtype=torch.bool)
+        if not text_mask.any(dim=1).all() or not visual_mask.any(dim=1).all():
+            raise ValueError("Cross attention requires valid text and visual nodes")
 
         matched_visual, text_to_vision_attention = self.text_to_vision(
             query=text_nodes,
@@ -96,6 +98,13 @@ class CrossGraphReasoner(nn.Module):
 
         text_scale = text_mask.unsqueeze(-1).to(text_nodes.dtype)
         visual_scale = visual_mask.unsqueeze(-1).to(visual_nodes.dtype)
+        if return_attention:
+            text_to_vision_attention = text_to_vision_attention * (
+                text_mask[:, None, :, None] & visual_mask[:, None, None, :]
+            ).to(text_to_vision_attention.dtype)
+            vision_to_text_attention = vision_to_text_attention * (
+                visual_mask[:, None, :, None] & text_mask[:, None, None, :]
+            ).to(vision_to_text_attention.dtype)
         return {
             "text_nodes": text_context * text_scale,
             "visual_nodes": visual_context * visual_scale,
