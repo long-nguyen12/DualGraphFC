@@ -241,11 +241,24 @@ def main():
         ],
         weight_decay=config.weight_decay,
     )
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    warmup_epochs = getattr(config, "warmup_epochs", 0)
+    cosine_epochs = max(config.epochs - warmup_epochs, 1)
+    cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
-        T_max=config.epochs,
+        T_max=cosine_epochs,
         eta_min=config.min_lr,
     )
+    if warmup_epochs > 0:
+        warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_epochs
+        )
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup_scheduler, cosine_scheduler],
+            milestones=[warmup_epochs],
+        )
+    else:
+        scheduler = cosine_scheduler
     criterion = build_classification_loss(config, device)
     vision_name = config.vision_model.rsplit("/", 1)[-1]
     checkpoint_path = str(Path(config.checkpoint_dir) / f"{vision_name}_best.pt")

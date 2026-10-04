@@ -56,15 +56,16 @@ class Config:
 
     transformer_lr = 2e-5
     graph_lr = 5e-5
-    weight_decay = 0.05
+    weight_decay = 0.02
     max_grad_norm = 0.5
     # Retained so configurations stored by older checkpoints remain loadable.
     scheduler_factor = 0.5
     scheduler_patience = 2
     min_lr = 1e-6
+    warmup_epochs = 3
 
     focal_gamma = 2.0
-    label_smoothing = 0.1
+    label_smoothing = 0.05
     # Label order: supported, refuted, not enough information.
     class_weights = [1.3, 0.8, 1.3]
 

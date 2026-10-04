@@ -211,7 +211,7 @@ class MochegCollator:
         image_size=224,
         feature_shape=None,
         augment=False,
-        evidence_drop_prob=0.15,
+        evidence_drop_prob=0.10,
     ):
         self.tokenizer = tokenizer
         self.max_text_length = max_text_length
