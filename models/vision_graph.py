@@ -7,8 +7,6 @@ from torch_geometric.nn import SAGEConv
 
 
 class VisionGraphBlock(nn.Module):
-    """A small residual ViG-style block using GraphSAGE."""
-
     def __init__(self, hidden_dim, dropout=0.1):
         super().__init__()
         self.input_projection = nn.Linear(hidden_dim, hidden_dim)
@@ -96,10 +94,6 @@ class VisionGraph(nn.Module):
             )
         else:
             image_mask = image_mask.to(device=values.device, dtype=torch.bool)
-        if max_images == 0 or not image_mask.any(dim=1).all():
-            raise ValueError("Every visual graph requires at least one valid image")
-        if (channels, height, width) != self.feature_shape:
-            raise ValueError("Vision feature maps have an unexpected spatial shape")
 
         feature_height, feature_width = self.feature_grid
         features_per_image = feature_height * feature_width

@@ -23,8 +23,6 @@ class MochegDataset:
 
     def load_split(self, split, limit=None):
         split = self._check_split(split)
-        if limit is not None and limit < 1:
-            raise ValueError("limit must be at least 1")
         if split not in self._splits:
             self._load_split(split)
         samples = self._splits[split]
@@ -47,14 +45,6 @@ class MochegDataset:
             sample = self._claims[candidate_split].get(claim_id)
             if sample is not None:
                 matches.append(sample)
-        if not matches:
-            raise KeyError(f"Claim {claim_id!r} was not found in any split")
-        if len(matches) > 1:
-            locations = ", ".join(sample["split"] for sample in matches)
-            raise ValueError(
-                f"Claim {claim_id!r} occurs in multiple splits ({locations}); "
-                "pass split explicitly"
-            )
         return self._copy(matches[0])
 
     def get_images(self, claim_id, split=None):
@@ -144,21 +134,9 @@ class MochegDataset:
             return
 
         path = self.retrieved_text_dir / f"{split}.csv"
-        if not path.is_file():
-            raise FileNotFoundError(
-                f"Retrieved text was not found at {path}; run "
-                "retrieve_mocheg_text.py first"
-            )
-
         retrieved = {claim_id: [] for claim_id in missing_claim_ids}
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
             reader = csv.DictReader(handle)
-            required = {"claim_id", "rank", "corpus_id", "text"}
-            if reader.fieldnames is None or not required.issubset(reader.fieldnames):
-                raise ValueError(
-                    f"Retrieved-text file {path} must contain: "
-                    f"{', '.join(sorted(required))}"
-                )
             for row in reader:
                 claim_id = row["claim_id"]
                 text = row["text"].strip()

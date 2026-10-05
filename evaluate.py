@@ -21,7 +21,7 @@ from utils import (
 
 def build_dataloader(
     config, split, *, tokenizer=None, image_processor=None, shuffle=False,
-    limit=None, num_workers=0,
+    limit=None, num_workers=0, subset_manifest=None, diagnostic=False,
 ):
     if tokenizer is None:
         tokenizer = load_text_tokenizer(config)
@@ -40,6 +40,12 @@ def build_dataloader(
     )
     if not len(dataset):
         raise ValueError(f"MOCHEG split {split!r} contains no complete records")
+    if subset_manifest is not None:
+        from data.subset import verify_subset
+
+        if limit is not None:
+            raise ValueError("A locked subset cannot be combined with --limit")
+        verify_subset(dataset, subset_manifest)
     print(
         f"{split}: retained {len(dataset)} complete records; "
         f"exclusions={dataset.subset_report['exclusion_counts']}"
@@ -47,10 +53,12 @@ def build_dataloader(
     collator = MochegCollator(
         tokenizer, max_text_length=config.max_text_length,
         image_size=config.image_size, augment=(split == "train" and shuffle),
+        return_evidence_token_mask=diagnostic,
     )
     return DataLoader(
         dataset, batch_size=config.batch_size, shuffle=shuffle,
         num_workers=num_workers, collate_fn=collator, drop_last=False,
+        generator=torch.Generator().manual_seed(config.seed),
     ), tokenizer
 
 
@@ -183,6 +191,7 @@ def parse_args():
     parser.add_argument("--num-workers", type=int)
     parser.add_argument("--retrieved-text-dir")
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--subset-manifest")
     parser.add_argument("--device", default="auto")
     return parser.parse_args()
 
@@ -199,8 +208,15 @@ def main():
         if value is not None:
             setattr(config, name, value)
     device = resolve_device(args.device)
+    subset_manifest = None
+    if args.subset_manifest:
+        from data.subset import load_subset_manifest, verify_study_config
+
+        subset_manifest = load_subset_manifest(args.subset_manifest)
+        verify_study_config(config, subset_manifest)
     dataloader, _ = build_dataloader(
         config, args.split, limit=args.limit, num_workers=config.num_workers,
+        subset_manifest=subset_manifest,
     )
     model = DualGraphFC(config).to(device)
     load_checkpoint(model, checkpoint, device)

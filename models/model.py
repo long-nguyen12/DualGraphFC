@@ -37,17 +37,7 @@ class DualGraphFC(nn.Module):
         )
 
     def forward(self, batch, return_details=False, return_attention=False):
-        if "images" not in batch or "image_mask" not in batch:
-            raise ValueError("Every sample requires actual images and image_mask")
         text_mask = batch["text_node_mask"].bool()
-        if (
-            text_mask.ndim != 2
-            or text_mask.size(0) == 0
-            or text_mask.size(1) < 2
-            or not text_mask[:, 0].all()
-            or not text_mask[:, 1:].any(dim=1).all()
-        ):
-            raise ValueError("Every sample requires a claim and at least one text evidence")
         text_features = self.text_encoder(
             batch["input_ids"],
             batch["attention_mask"],

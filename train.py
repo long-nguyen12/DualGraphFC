@@ -1,4 +1,6 @@
 import argparse
+import hashlib
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 import shutil
@@ -28,10 +30,11 @@ def build_optimizer(model, config):
         {"name": "clip", "params": vision, "lr": config.vision_lr},
         {"name": "reasoning", "params": heads, "lr": config.graph_lr},
     ]
+    groups = [group for group in groups if group["params"]]
     ids = [id(p) for group in groups for p in group["params"]]
     expected = {id(p) for p in model.parameters() if p.requires_grad}
-    if any(not group["params"] for group in groups) or len(ids) != len(set(ids)) or set(ids) != expected:
-        raise ValueError("Optimizer must contain three nonempty, disjoint trainable groups")
+    if not groups or len(ids) != len(set(ids)) or set(ids) != expected:
+        raise ValueError("Optimizer must contain every trainable parameter exactly once")
     return torch.optim.AdamW(groups, weight_decay=config.weight_decay)
 
 
@@ -82,6 +85,12 @@ def train_one_epoch(
         if verify_gradients:
             if any(p.grad is not None for p in model.parameters() if not p.requires_grad):
                 raise AssertionError("A frozen parameter received a gradient")
+            for name, wrapper in (("deberta", model.text_encoder), ("clip", model.vision_encoder)):
+                for index, layer in enumerate(wrapper.finetuned_layers):
+                    if not any(p.grad is not None and torch.isfinite(p.grad).all()
+                               and p.grad.count_nonzero().item() for p in layer.parameters()):
+                        raise AssertionError(f"No finite nonzero gradient in {name} selected layer {index}")
+                    gradient_checks[f"{name}_selected_layer_{index}"] = "finite_nonzero_gradient"
             for group in optimizer.param_groups:
                 candidates = [
                     p for p in group["params"]
@@ -142,6 +151,7 @@ def save_checkpoint(
 def fit(
     model, train_loader, val_loader, optimizer, device, config,
     checkpoint_path, history_path=None, criterion=None, scheduler=None,
+    train_eval_loader=None,
 ):
     history, best_macro_f1, epochs_without_improvement = [], float("-inf"), 0
     scaler = make_grad_scaler(device)
@@ -188,7 +198,23 @@ def fit(
         predictions_path=run_path / "predictions" / "validation_best.json",
     )
     save_json(best_metrics, run_path / "validation_best_metrics.json")
+    if train_eval_loader is not None:
+        train_metrics = evaluate_model(
+            model, train_eval_loader, device, config.num_classes, criterion=criterion,
+            predictions_path=run_path / "predictions" / "train_best_clean.json",
+        )
+        save_json(train_metrics, run_path / "train_best_clean_metrics.json")
     return history, best_macro_f1
+
+
+def head_initialization_digest(model):
+    digest = hashlib.sha256()
+    for name, value in model.state_dict().items():
+        if name.startswith(("text_encoder.encoder.", "vision_encoder.encoder.")):
+            continue
+        digest.update(name.encode("utf-8"))
+        digest.update(value.detach().cpu().contiguous().numpy().tobytes())
+    return digest.hexdigest()
 
 
 def write_run_manifest(run_path, config, model, tokenizer, processor, loaders, device):
@@ -206,11 +232,13 @@ def write_run_manifest(run_path, config, model, tokenizer, processor, loaders, d
     )
     source_paths = [Path(name) for name in (
         "config.py", "utils.py", "train.py", "evaluate.py", "inference.py",
+        "diagnose_modalities.py", "run_finetune_study.py",
     )] + list(Path("models").glob("*.py")) + list(Path("data").glob("*.py"))
     for path in source_paths:
         destination = run_path / "source" / path
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(path, destination)
+        if path.exists():
+            shutil.copyfile(path, destination)
     save_json(config.to_dict(), run_path / "config.json")
     subsets = {}
     for split, loader in loaders.items():
@@ -234,6 +262,7 @@ def write_run_manifest(run_path, config, model, tokenizer, processor, loaders, d
         },
         "subset_claim_ids": subsets,
         "trainable_parameters": sum(p.numel() for p in model.parameters() if p.requires_grad),
+        "head_initialization_sha256": head_initialization_digest(model),
         "evaluation_scope": "complete_text_image_subset",
     }
     if device.type == "cuda":
@@ -251,6 +280,9 @@ def parse_args():
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--num-workers", type=int)
     parser.add_argument("--seed", type=int)
+    parser.add_argument("--text-finetune-layers", type=int, choices=(0, 2))
+    parser.add_argument("--vision-finetune-layers", type=int, choices=(0, 2))
+    parser.add_argument("--subset-manifest")
     parser.add_argument("--limit", type=int, help="Apply after complete-record filtering in each split")
     parser.add_argument("--run-name", help="Unique directory name under outputs/runs")
     parser.add_argument("--smoke-test", action="store_true")
@@ -265,10 +297,23 @@ def main():
     args = parse_args()
     overrides = {
         name: getattr(args, name) for name in
-        ("data_root", "retrieved_text_dir", "batch_size", "epochs", "num_workers", "seed")
+        ("data_root", "retrieved_text_dir", "batch_size", "epochs", "num_workers", "seed",
+         "text_finetune_layers", "vision_finetune_layers")
         if getattr(args, name) is not None
     }
-    config = Config(**overrides)
+    subset_manifest = None
+    if args.subset_manifest:
+        from data.subset import load_subset_manifest, verify_study_config
+
+        subset_manifest = load_subset_manifest(args.subset_manifest)
+        config = Config.from_dict(subset_manifest["config"])
+        for key, value in overrides.items():
+            setattr(config, key, value)
+        verify_study_config(config, subset_manifest)
+        if args.limit is not None:
+            raise ValueError("A locked subset cannot be combined with --limit")
+    else:
+        config = Config(**overrides)
     if config.batch_size < 1 or config.epochs < 1 or args.smoke_steps < 1:
         raise ValueError("Batch size, epochs and smoke steps must be positive")
     set_seed(config.seed)
@@ -292,15 +337,27 @@ def main():
     train_loader, _ = build_dataloader(
         config, "train", tokenizer=tokenizer, image_processor=processor,
         shuffle=True, limit=args.limit, num_workers=config.num_workers,
+        subset_manifest=subset_manifest,
     )
     loaders = {"train": train_loader}
     if not args.smoke_test:
         val_loader, _ = build_dataloader(
             config, "val", tokenizer=tokenizer, image_processor=processor,
             limit=args.limit, num_workers=config.num_workers,
+            subset_manifest=subset_manifest,
         )
         loaders["val"] = val_loader
     write_run_manifest(run_path, config, model, tokenizer, processor, loaders, device)
+    if subset_manifest is not None:
+        save_json(subset_manifest, run_path / "subset_manifest.json")
+        initialization_path = Path(args.subset_manifest).parent / f"head_seed_{config.seed}.json"
+        initialization = {"sha256": head_initialization_digest(model)}
+        if initialization_path.exists():
+            with initialization_path.open(encoding="utf-8") as handle:
+                if json.load(handle) != initialization:
+                    raise ValueError("Initial reasoning weights changed between configurations of the same seed")
+        else:
+            save_json(initialization, initialization_path)
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
     try:
@@ -328,12 +385,24 @@ def main():
             save_json(metrics, run_path / "smoke_metrics.json")
             print(metrics)
         else:
+            train_eval_loader, _ = build_dataloader(
+                config, "train", tokenizer=tokenizer, image_processor=processor,
+                num_workers=config.num_workers, limit=args.limit,
+                subset_manifest=subset_manifest,
+            )
             _, best_macro_f1 = fit(
                 model, train_loader, val_loader, optimizer, device, config,
                 run_path / "best.pt", run_path / "training_history.json",
                 criterion=criterion, scheduler=build_scheduler(optimizer, config),
+                train_eval_loader=train_eval_loader,
             )
             print(f"Best validation macro-F1: {best_macro_f1:.4f}; checkpoint: {run_path / 'best.pt'}")
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+            save_json({
+                "peak_allocated_gib": torch.cuda.max_memory_allocated(device) / 2**30,
+                "peak_reserved_gib": torch.cuda.max_memory_reserved(device) / 2**30,
+            }, run_path / "memory_metrics.json")
     except torch.cuda.OutOfMemoryError:
         failure = {
             "error": "CUDA out of memory", "config": config.to_dict(),

@@ -40,7 +40,7 @@ class Config:
     min_lr = 1e-6
     warmup_epochs = 3
 
-    alignment_weight = 0.0
+    alignment_weight = 0
 
     dropout = 0.3
     num_classes = 3

@@ -13,8 +13,6 @@ class ConditionalAttentionPool(nn.Module):
 
     def forward(self, nodes, claim, mask, return_attention=False):
         mask = mask.to(device=nodes.device, dtype=torch.bool)
-        if not mask.any(dim=-1).all():
-            raise ValueError("Conditional pooling requires valid nodes in every sample")
         context = self.node_projection(nodes) + self.claim_projection(claim).unsqueeze(1)
         scores = self.score(torch.tanh(context)).squeeze(-1).float()
         scores = scores.masked_fill(~mask, float("-inf"))

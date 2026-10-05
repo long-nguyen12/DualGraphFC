@@ -25,11 +25,7 @@ class TextEncoder(nn.Module):
         self.encoder.to(dtype=self.projection.weight.dtype)
         self.encoder.requires_grad_(False)
         count = getattr(config, "text_finetune_layers", 2)
-        if not isinstance(count, int) or count < 0:
-            raise ValueError("text_finetune_layers must be a non-negative integer")
         layers = self.encoder.encoder.layer if count else ()
-        if count > len(layers):
-            raise ValueError("text_finetune_layers exceeds the backbone layer count")
         self.finetuned_layers = tuple(layers[-count:]) if count else ()
         for layer in self.finetuned_layers:
             layer.requires_grad_(True)
@@ -53,8 +49,6 @@ class TextEncoder(nn.Module):
 
     def forward(self, input_ids, attention_mask, node_mask=None, token_type_ids=None):
         if input_ids.ndim == 2:
-            if not attention_mask.bool().any(dim=-1).all():
-                raise ValueError("Every encoded text must contain valid tokens")
             return self._encode(input_ids, attention_mask, token_type_ids)
 
         batch_size, num_nodes, sequence_length = input_ids.shape
@@ -65,10 +59,6 @@ class TextEncoder(nn.Module):
             node_mask = attention_mask.any(dim=-1)
 
         valid = node_mask.reshape(-1).bool()
-        if not node_mask.bool().any(dim=-1).all():
-            raise ValueError("Every sample must contain valid text nodes")
-        if not flat_attention[valid].bool().any(dim=-1).all():
-            raise ValueError("Every valid text node must contain valid tokens")
         flat_types = None if token_type_ids is None else token_type_ids.reshape(
             batch_size * num_nodes, sequence_length
         )[valid]
