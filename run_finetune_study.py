@@ -9,7 +9,7 @@ import sys
 import numpy as np
 import torch
 import transformers
-from transformers import CLIPImageProcessor
+from transformers import AutoConfig, CLIPImageProcessor
 
 from config import Config
 from data.dataset import MochegDataset
@@ -40,16 +40,26 @@ def runtime_signature():
 
 
 def prepare_subset(args):
-    reference = read_json(args.reference_manifest)
-    audit = read_json(args.subset_reference)
+    reference = read_json(args.reference_manifest) if args.reference_manifest else None
+    audit = read_json(args.subset_reference) if args.subset_reference else None
     config = Config()
     config.run_dir = (Path(args.study_dir) / "runs").as_posix()
     for prefix in ("text", "vision"):
-        backbone = reference["backbones"][prefix]
-        setattr(config, f"{prefix}_model", backbone["name"])
-        setattr(config, f"{prefix}_model_revision", backbone["revision"])
-        if not backbone["revision"]:
-            raise ValueError("The reference must pin both pretrained backbone revisions")
+        if reference is not None:
+            backbone = reference["backbones"][prefix]
+            setattr(config, f"{prefix}_model", backbone["name"])
+            setattr(config, f"{prefix}_model_revision", backbone["revision"])
+            if not backbone["revision"]:
+                raise ValueError("The reference must pin both pretrained backbone revisions")
+        else:
+            backbone_config = AutoConfig.from_pretrained(
+                getattr(config, f"{prefix}_model"),
+                revision=getattr(config, f"{prefix}_model_revision"),
+            )
+            revision = getattr(backbone_config, "_commit_hash", None)
+            if not revision:
+                raise ValueError(f"Cannot resolve an immutable pretrained revision for {prefix}")
+            setattr(config, f"{prefix}_model_revision", revision)
     for field in ("data_root", "retrieved_text_dir"):
         if getattr(args, field):
             setattr(config, field, getattr(args, field))
@@ -61,9 +71,11 @@ def prepare_subset(args):
             image_size=config.image_size, retrieved_text_dir=config.retrieved_text_dir,
         )
         ids[split] = [str(sample["claim_id"]) for sample in dataset.samples]
-        if len(ids[split]) != count or ids[split] != reference_ids(audit, split):
-            raise ValueError(f"{split} differs from the audited complete subset ({count} records)")
-        if split in reference["subset_claim_ids"] and ids[split] != reference_ids(reference, split):
+        if len(ids[split]) != count or len(ids[split]) != len(set(ids[split])):
+            raise ValueError(f"{split} must contain {count} unique complete records")
+        if audit is not None and ids[split] != reference_ids(audit, split):
+            raise ValueError(f"{split} differs from the audited complete subset")
+        if reference is not None and split in reference["subset_claim_ids"] and ids[split] != reference_ids(reference, split):
             raise ValueError(f"{split} differs from the logged v2 run")
         records[split] = fingerprint_records(dataset.samples)
         print(f"Locked {split}: {len(ids[split])} claims")
@@ -73,8 +85,8 @@ def prepare_subset(args):
         "subset_manifest_version": 1, "architecture_version": 2,
         "config": config.to_dict(), "subset_claim_ids": ids, "subset_records": records,
         "image_processor_config": processor.to_dict(),
-        "reference_manifest_sha256": file_digest(args.reference_manifest),
-        "subset_reference_sha256": file_digest(args.subset_reference),
+        "reference_manifest_sha256": file_digest(args.reference_manifest) if reference is not None else None,
+        "subset_reference_sha256": file_digest(args.subset_reference) if audit is not None else None,
     }
     path = Path(args.study_dir) / "subset_manifest.json"
     if path.exists():
@@ -236,8 +248,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage", required=True, choices=("prepare", "smoke", "screen", "confirm", "test"))
     parser.add_argument("--study-dir", default="outputs/studies/modality_finetune")
-    parser.add_argument("--reference-manifest", default="outputs/logs/manifest.json")
-    parser.add_argument("--subset-reference", default="outputs/analysis/complete_subset_v2.json")
+    parser.add_argument("--reference-manifest", help="Optional old-run manifest to reuse pretrained revisions and verify IDs")
+    parser.add_argument("--subset-reference", help="Optional subset audit to verify ordered IDs")
     parser.add_argument("--data-root")
     parser.add_argument("--retrieved-text-dir")
     parser.add_argument("--device", default="cuda")
